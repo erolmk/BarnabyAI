@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: mediastream:">
+<title>Help</title>
+<link rel="stylesheet" href="shared.css">
+<link rel="stylesheet" href="widget.css">
+</head>
+<body class="collapsed">
+
+<!-- Collapsed: the "Help" pill (UX 11.2). Never icon-only. While Barnaby works it also says what he is doing. -->
+<button id="pill" class="pill" type="button" data-state="idle">
+  <img class="avatar" src="assets/avatar.svg" alt="" width="56" height="56">
+  <span class="pill-words">
+    <span class="pill-word">Help</span>
+    <span id="pillState" class="pill-state" hidden><span class="pill-dot" aria-hidden="true"></span><span id="pillWord"></span></span>
+  </span>
+</button>
+
+<!-- Expanded panel (docked: the right third of the screen; floating: a panel in a corner) -->
+<main id="panel" class="panel">
+  <header class="top">
+    <p class="who"><img src="assets/avatar.svg" alt="" width="40" height="40"><span id="whoName"></span></p>
+    <button id="smallBtn" class="small-btn" type="button">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
+      <span>Make me small</span>
+    </button>
+  </header>
+
+  <!-- Always clear what is going on (UX 6.10): state icon, what he is doing, why, and where we are -->
+  <section id="statusCard" class="status-card" data-state="idle" aria-label="What is happening">
+    <span id="stIcon" class="st-icon" aria-hidden="true"></span>
+    <div class="st-text">
+      <p id="stKicker" class="st-kicker" hidden></p>
+      <p id="status" class="st-title" role="status" aria-live="polite">Ready when you are</p>
+      <p id="stDetail" class="st-detail" hidden></p>
+    </div>
+  </section>
+  <p id="eye" class="eye" hidden>
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+    <span>I’m looking at your screen while I help</span>
+  </p>
+
+  <div id="middle" class="middle">
+    <ol id="plan" class="plan" aria-label="The steps" hidden></ol>
+    <section class="captions" aria-label="What the helper said">
+      <p id="prevLine" class="prev" hidden></p>
+      <p id="curLine" class="cur" aria-live="polite"></p>
+    </section>
+    <p id="youSaid" class="you-said" hidden></p>
+    <section id="answers" class="answers" hidden></section>
+    <div id="typeBox" class="type-box">
+      <label for="typeInput">Type instead</label>
+      <div class="type-row">
+        <input id="typeInput" type="text" autocomplete="off" spellcheck="true">
+        <button id="typeBtn" type="button">Ask</button>
+      </div>
+    </div>
+  </div>
+
+  <button id="moreBtn" class="more-btn" type="button" hidden>
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    <span id="moreLabel">More below</span>
+  </button>
+
+  <div id="listenRow" class="listen-row" hidden>
+    <p id="listenText">I'm listening. Take your time.</p>
+    <div id="meter" class="meter" aria-hidden="true"><div id="meterFill" class="meter-fill"></div></div>
+  </div>
+
+  <div id="confirmRow" class="confirm-row" hidden>
+    <button id="yesBtn" class="primary" type="button">Yes, that's right</button>
+    <button id="noBtn" type="button">No, change something</button>
+  </div>
+
+  <button id="talkBtn" class="primary talk" type="button">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7"/></svg>
+    <span id="talkLabel">Talk</span>
+  </button>
+
+  <nav class="bottom" aria-label="Always here">
+    <button id="againBtn" type="button">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.4-5.5"/><path d="M4 4v5h5"/></svg>
+      <span>Say it again</span>
+    </button>
+    <button id="stopBtn" class="danger" type="button">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+      <span>Stop</span>
+    </button>
+    <button id="homeBtn" type="button">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v10h5v-6h3v6h5V10"/></svg>
+      <span>Home</span>
+    </button>
+    <!-- floating: "Move me"; docked (the panel has its own place on the right): "Make me small" takes this spot -->
+    <button id="moveBtn" type="button">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/></svg>
+      <span>Move me</span>
+    </button>
+    <button id="smallBtn2" class="small-btn2" type="button">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
+      <span>Make me small</span>
+    </button>
+  </nav>
+</main>
+
+<script src="demo-stub.js"></script>
+<script src="assets/icons.js"></script>
+<script src="status.js"></script>
+<script src="voice.js"></script>
+<script src="widget.js"></script>
+</body>
+</html>

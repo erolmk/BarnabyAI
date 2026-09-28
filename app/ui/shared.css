@@ -1,0 +1,170 @@
+/* Barnaby shared tokens + base styles. Source: research/02_ux_guidelines.md section 13.
+   Every text pair >= 7:1, every boundary >= 3:1 (ratios in section 2.2).
+   Text size: pages set --ui-scale from settings.textScale (1.0 - 1.6):
+     document.documentElement.style.setProperty('--ui-scale', s.textScale || 1)
+   Dark theme (opt-in): <html data-theme="dark">. */
+:root {
+  --ui-scale: 1;
+  color-scheme: light;
+
+  /* type */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --fs-min:     calc(20px * var(--ui-scale));
+  --fs-body:    calc(24px * var(--ui-scale));
+  --fs-button:  calc(26px * var(--ui-scale));
+  --fs-caption: calc(28px * var(--ui-scale));
+  --fs-h3:      calc(28px * var(--ui-scale));
+  --fs-h2:      calc(32px * var(--ui-scale));
+  --fs-h1:      calc(40px * var(--ui-scale));
+  --fs-display: calc(64px * var(--ui-scale));
+  --fw-body: 400;
+  --fw-caption: 500;
+  --fw-strong: 600;
+  --lh-body: 1.5;
+  --lh-tight: 1.25;
+  --measure: 60ch;
+
+  /* colour: light (default) */
+  --bg: #F7F4EE;
+  --surface: #FFFFFF;
+  --text: #1B1B1B;
+  --text-2: #3B3B3B;
+  --border: #6B6B6B;
+  --primary: #0B4A8B;
+  --primary-strong: #083A6E;
+  --on-primary: #FFFFFF;
+  --primary-soft: #E3EDF8;
+  --primary-ink: #0B3566;
+  --success: #1C5E2B;
+  --on-success: #FFFFFF;
+  --danger: #9B1C1C;
+  --on-danger: #FFFFFF;
+  --warn-bg: #FFF4D6;
+  --warn-border: #8A5A00;
+  --caption-bg: #FFFBEA;
+  --focus: #1B1B1B;
+  --spark: #FFB000;                    /* brand dot only; never text (4.85:1 on --primary) */
+  --ring-a: #FFD000;
+  --ring-b: #000000;
+  --scrim: rgba(0, 0, 0, 0.20);
+
+  /* size */
+  --target-min:     calc(64px * var(--ui-scale));
+  --target-primary: calc(88px * var(--ui-scale));
+  --target-hero:    calc(112px * var(--ui-scale));
+  --gap-target: 24px;
+  --space-1: 8px;  --space-2: 16px; --space-3: 24px;
+  --space-4: 32px; --space-5: 48px; --space-6: 64px;
+  --radius: 16px;
+  --radius-lg: 24px;
+  --radius-pill: 999px;
+  --border-w: 2px;
+  --focus-w: 4px;
+  --focus-offset: 3px;
+  --shadow-1: 0 2px 6px rgba(0, 0, 0, 0.18);
+
+  /* motion */
+  --dur-fast: 150ms;
+  --dur: 250ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --pulse-period: 1.6s;
+  --ring-lead: 1200ms;
+  --double-guard: 600ms;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121417;
+  --surface: #1E2228;
+  --text: #F4F4F4;
+  --text-2: #D0D0D0;
+  --border: #8D96A0;
+  --primary: #8CC0FF;
+  --primary-strong: #B5D6FF;
+  --on-primary: #0B0F14;
+  --primary-soft: #1D3350;
+  --primary-ink: #F4F4F4;
+  --success: #86E0A0;
+  --on-success: #0B0F14;
+  --danger: #FFA3A3;
+  --on-danger: #0B0F14;
+  --warn-bg: #3A2E00;
+  --warn-border: #E0B040;
+  --caption-bg: #262A1E;
+  --focus: #F4F4F4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-fast: 0ms; --dur: 0ms; --pulse-period: 0s; }
+  *, *::before, *::after { transition-duration: 0ms !important; animation: none !important; }
+}
+
+/* ---------- base ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { font-family: var(--font-sans); font-size: var(--fs-body); line-height: var(--lh-body);
+       color: var(--text); background: var(--bg); -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--bg); color: var(--text); font-weight: var(--fw-body); }
+p, li { max-width: var(--measure); }
+h1, h2, h3 { margin: 0; line-height: var(--lh-tight); font-weight: var(--fw-strong); font-family: var(--font-display); }
+h1 { font-size: var(--fs-h1); }
+h2 { font-size: var(--fs-h2); }
+h3 { font-size: var(--fs-h3); }
+small, .small { font-size: var(--fs-min); }            /* the smallest text anywhere: 20 px at scale 1 */
+.muted { color: var(--text-2); }                        /* the ONLY grey */
+strong, b { font-weight: var(--fw-strong); }
+a { color: var(--primary); text-decoration: underline; text-underline-offset: 0.15em; }
+
+/* ---------- buttons: one look everywhere ---------- */
+button, .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  min-height: var(--target-min); min-width: var(--target-min); padding: 0 var(--space-3);
+  font: var(--fw-strong) var(--fs-button)/var(--lh-tight) var(--font-sans);
+  border: var(--border-w) solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text); cursor: pointer; text-align: center;
+  text-decoration: none;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+button:hover, .btn:hover { border-color: var(--primary); background: var(--primary-soft); color: var(--primary-ink); }
+button.primary, .btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary);
+       min-height: var(--target-primary); }
+button.primary:hover, .btn.primary:hover, button.primary:active { background: var(--primary-strong); border-color: var(--primary-strong); color: var(--on-primary); }
+button.danger, .btn.danger { background: var(--danger); color: var(--on-danger); border-color: var(--danger); }
+button.danger:hover, .btn.danger:hover { background: var(--danger); color: var(--on-danger); border-color: var(--text); }
+button.hero, .btn.hero { min-height: var(--target-hero); }
+button svg, .btn svg { flex: none; width: 1.3em; height: 1.3em; }
+:focus-visible { outline: var(--focus-w) solid var(--focus); outline-offset: var(--focus-offset); }
+[tabindex="-1"]:focus { outline: none; } /* headings we move focus to for screen readers */
+
+/* A picked option: soft background + 3 px border + tick + the word "Chosen" (colour is never the only signal). */
+.choice[aria-pressed="true"], .choice[aria-checked="true"] {
+  background: var(--primary-soft); color: var(--primary-ink); border: 3px solid var(--primary);
+}
+.choice .chosen { display: none; font-size: var(--fs-min); }
+.choice[aria-pressed="true"] .chosen, .choice[aria-checked="true"] .chosen { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ---------- forms ---------- */
+label { display: block; font-weight: var(--fw-strong); margin-bottom: var(--space-1); }
+input, textarea, select {
+  min-height: var(--target-min); width: 100%;
+  font: var(--fw-body) var(--fs-body)/var(--lh-body) var(--font-sans);
+  color: var(--text); background: var(--surface); border: var(--border-w) solid var(--border);
+  border-radius: var(--radius); padding: 0 var(--space-2);
+}
+textarea { padding: var(--space-1) var(--space-2); }
+::placeholder { color: var(--text-2); opacity: 1; } /* the default grey fails 7:1 */
+input[type="checkbox"], input[type="radio"] { width: 32px; height: 32px; min-height: 0; accent-color: var(--primary); }
+
+/* ---------- surfaces ---------- */
+.card { background: var(--surface); border: var(--border-w) solid var(--border); border-radius: var(--radius-lg);
+        padding: var(--space-4); }
+.notice { background: var(--warn-bg); border: var(--border-w) solid var(--warn-border); border-radius: var(--radius);
+          padding: var(--space-2) var(--space-3); color: var(--text); }
+.caption { background: var(--caption-bg); border-radius: var(--radius); padding: var(--space-2) var(--space-3);
+           font-size: var(--fs-caption); font-weight: var(--fw-caption); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (forced-colors: active) {
+  button, .btn, input, textarea, select, .card { border: 2px solid ButtonText; }
+}

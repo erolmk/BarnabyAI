@@ -1,0 +1,155 @@
+/* Helper widget (UX 11.2 / 11.3). Tokens come from shared.css. The window is transparent. */
+html, body { height: 100%; margin: 0; overflow: hidden; background: transparent; }
+body.demo { background: #C9CFD6; } /* browser review only: shows where the window is transparent */
+
+.ico { width: 1.1em; height: 1.1em; flex: none; fill: none; stroke: currentColor; stroke-width: 2.25;
+  stroke-linecap: round; stroke-linejoin: round; }
+button { gap: var(--space-1); }
+p { margin: 0; }
+
+/* ---------- collapsed pill: ~212 x 88 inside the 248 x 112 window ---------- */
+body.expanded .pill, body.collapsed .panel { display: none; }
+.pill { position: absolute; right: 18px; bottom: 12px; width: 212px; height: 88px; padding: 0 16px 0 13px;
+  gap: 14px; justify-content: center; border-radius: var(--radius-pill);
+  background: var(--primary); color: var(--on-primary); border: 3px solid #FFFFFF;
+  box-shadow: 0 0 0 2px #1B1B1B, 0 2px 6px rgba(0, 0, 0, 0.18); }
+.pill:hover { background: var(--primary-strong); color: var(--on-primary); border-color: #FFFFFF; }
+.pill:focus-visible { outline-offset: 2px; }
+.avatar-wrap { position: relative; flex: none; display: block; }
+.avatar { width: 56px; height: 56px; flex: none; display: block; border-radius: 50%;
+  box-shadow: 0 0 0 3px #FFFFFF; } /* white ring: the avatar is the same blue as the pill */
+.pill-word { font-size: min(var(--fs-h3), 38px); font-weight: var(--fw-strong); line-height: 1.15; }
+.pill-words { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+/* busy: "Help" stays, the state word goes under it (20 px, fixed: the pill does not grow with the text size) */
+.pill-state { font-size: 20px; font-weight: var(--fw-strong); line-height: 1.15; white-space: nowrap; }
+.pill.has-state { gap: 8px; padding: 0 10px; }
+.pill.has-state .avatar { width: 48px; height: 48px; }
+.pill.has-state .pill-word { font-size: 28px; }
+.pill-state { display: flex; align-items: center; gap: 6px; }
+.pill-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: currentColor; }
+
+/* A calm "working" sign: slow (2.4 s), small (6%), never below 80% opacity, off with reduced motion (UX 2.4). */
+@keyframes calm-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.06); opacity: 0.8; } }
+.pill.busy .pill-dot, .status-card.busy .st-icon { animation: calm-pulse 2.4s ease-in-out infinite; }
+
+/* ---------- expanded panel: opaque rounded card ---------- */
+.panel { position: absolute; right: 0; bottom: 0; width: min(100%, 480px); height: min(100%, 760px);
+  box-sizing: border-box; display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2);
+  background: var(--surface); color: var(--text); border: var(--border-w) solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden; }
+body:not(.demo) .panel { width: 100%; height: 100%; } /* in the app, main sizes the window by text size and confirm card */
+body.demo.docked .panel { width: min(100%, var(--demo-dock-w, 560px)); height: 100%; } /* browser review of the docked panel: ?docked=440 */
+.panel > * { flex: none; }
+
+.top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-1) var(--space-2); }
+.who { display: flex; align-items: center; gap: var(--space-1); font-size: var(--fs-h3); font-weight: var(--fw-strong);
+  line-height: var(--lh-tight); }
+.who img { width: 40px; height: 40px; flex: none; }
+.small-btn { margin-left: auto; min-height: 64px; padding: 4px var(--space-2); }
+.eye { display: flex; align-items: center; gap: var(--space-1); margin-top: calc(-1 * var(--space-1));
+  font-size: var(--fs-min); color: var(--text-2); }
+
+/* status card: always says what is going on. Busy = soft blue, your turn = soft amber, ready = plain. */
+.status-card { display: flex; align-items: flex-start; gap: var(--space-2); padding: 12px var(--space-2);
+  background: var(--primary-soft); color: var(--primary-ink); border: var(--border-w) solid var(--primary);
+  border-radius: var(--radius); }
+.status-card[data-state="idle"] { background: var(--surface); color: var(--text); border-color: var(--border); }
+.status-card[data-state="waiting"] { background: var(--warn-bg); color: var(--text); border-color: var(--warn-border); }
+.st-icon { flex: none; width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--primary); color: var(--on-primary); }
+.status-card[data-state="waiting"] .st-icon { background: var(--warn-border); color: var(--warn-bg); }
+.st-icon .icon { width: 34px; height: 34px; }
+.st-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.st-kicker { font-size: var(--fs-min); font-weight: var(--fw-strong); }
+.st-title { font-size: var(--fs-h3); font-weight: var(--fw-strong); line-height: var(--lh-tight); overflow-wrap: anywhere; }
+.st-detail { font-size: var(--fs-body); overflow-wrap: anywhere; }
+
+/* the plan: done = tick, now = bold with an arrow on soft blue, next = number in the one allowed grey */
+.plan { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.plan li { max-width: none; display: flex; align-items: flex-start; gap: 12px; padding: 6px 10px;
+  font-size: var(--fs-body); line-height: 1.35; color: var(--text-2); border: var(--border-w) solid transparent;
+  border-radius: var(--radius); }
+.plan .mark { flex: none; width: 1.35em; height: 1.35em; margin-top: 0.02em; display: grid; place-items: center;
+  border-radius: 50%; border: var(--border-w) solid var(--border); font-size: var(--fs-min); font-weight: var(--fw-strong); }
+.plan .mark .icon { width: 80%; height: 80%; }
+.plan li.done .mark { border-color: var(--success); color: var(--success); }
+.plan li.now { color: var(--primary-ink); background: var(--primary-soft); border-color: var(--primary); font-weight: var(--fw-strong); }
+.plan li.now .mark { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
+.plan li.count { font-size: var(--fs-min); padding-left: calc(1.35em + 22px); }
+
+/* docked: flush with the right edge of the screen, full height; "Make me small" moves into the bottom row
+   and "Move me" goes (the panel has its own place) */
+body.docked .panel { border-radius: 0; border-width: 0 0 0 var(--border-w); }
+body.docked .top, body:not(.docked) #smallBtn2, body.docked #moveBtn { display: none; }
+
+/* a question or confirm card is open: it gets the room (one thing at a time, UX 6.1); the card keeps one line */
+body.asking .plan, body.asking .st-kicker, body.asking .st-detail { display: none !important; }
+body.asking .status-card { padding: 8px 12px; align-items: center; }
+body.asking .st-icon { width: 40px; height: 40px; }
+body.asking .st-icon .icon { width: 26px; height: 26px; }
+
+/* The window stays 480 x <=760 at every text size, so fixed rows keep 64 / 88 px targets instead of growing
+   with --ui-scale (their text still grows); the words get the room. */
+/* the only part that scrolls */
+.middle { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+  gap: var(--space-2); margin: calc(-1 * var(--space-1)); padding: var(--space-1); }
+.middle > * { flex: none; }
+.middle::-webkit-scrollbar { width: 16px; }
+body.compact .middle::-webkit-scrollbar { width: 24px; }
+/* compact: the always-there controls stop growing past 28 px so they stay on one line each */
+body.compact .bottom button, body.compact .small-btn { font-size: min(var(--fs-button), 28px); gap: 6px; }
+.middle::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 3px solid var(--surface); }
+.middle::-webkit-scrollbar-track { background: transparent; }
+
+.captions { background: var(--caption-bg); border: var(--border-w) solid var(--warn-border);
+  border-radius: var(--radius); padding: var(--space-2); overflow-wrap: anywhere; }
+.prev { font-size: var(--fs-body); color: var(--text-2); margin-bottom: var(--space-1); }
+.cur { font-size: var(--fs-caption); font-weight: var(--fw-strong); line-height: 1.35; white-space: pre-wrap; }
+.you-said { background: var(--primary-soft); color: var(--primary-ink); border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2); font-size: var(--fs-body); overflow-wrap: anywhere; }
+
+/* answers: stacked big buttons, text answer, or the confirm card */
+.answers { display: flex; flex-direction: column; gap: var(--space-2); }
+.answers .legend { font-size: var(--fs-body); font-weight: var(--fw-strong); }
+.answers.two { display: grid; grid-template-columns: 1fr 1fr; }
+.answers.two .legend, .answers.two .full { grid-column: 1 / -1; }
+.answers button { width: 100%; min-height: 88px; padding: var(--space-1) var(--space-2);
+  white-space: normal; }
+.answers label, .type-box label { display: block; font-size: var(--fs-min); font-weight: var(--fw-strong);
+  margin-bottom: 4px; }
+.answers input { width: 100%; box-sizing: border-box; }
+.answers .note { font-size: var(--fs-body); color: var(--text-2); }
+.card-title { margin: 0; font-size: var(--fs-h2); font-weight: var(--fw-strong); line-height: var(--lh-tight); }
+.fields { margin: 0; display: flex; flex-direction: column; gap: var(--space-2); padding: 12px;
+  border: var(--border-w) solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.fields dt { font-size: var(--fs-body); font-weight: var(--fw-strong); color: var(--text-2); }
+.fields dd { margin: 0; font-size: var(--fs-body); white-space: pre-wrap; overflow-wrap: break-word; }
+.fields.side .field { display: grid; grid-template-columns: 4.4em minmax(0, 1fr); gap: 12px; }
+
+.type-row { display: flex; gap: var(--space-2); }
+.type-row input { flex: 1 1 auto; min-width: 0; box-sizing: border-box; }
+.type-row button { flex: none; }
+
+.more-btn { width: 100%; min-height: 64px; }
+.more-btn.up .ico { transform: rotate(180deg); }
+
+.listen-row { background: var(--primary-soft); color: var(--primary-ink); border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2) var(--space-2); }
+.listen-row p { font-size: var(--fs-body); font-weight: var(--fw-strong); margin-bottom: var(--space-1); }
+.meter { height: 32px; border: var(--border-w) solid var(--primary-ink); border-radius: var(--radius);
+  background: var(--surface); overflow: hidden; display: flex; justify-content: center; }
+.meter-fill { height: 100%; width: 0; background: var(--primary); } /* grows from the middle: a voice level, not a countdown */
+
+.confirm-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.confirm-row button { min-height: 88px; padding: var(--space-1) var(--space-2); white-space: normal; }
+
+button.talk { width: 100%; min-height: 88px; font-size: var(--fs-h3); gap: var(--space-2); }
+button.talk.listening { box-shadow: 0 0 0 5px var(--primary-soft), 0 0 0 7px var(--primary); }
+
+.bottom { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.bottom button { min-height: 64px; padding: 4px var(--space-1); white-space: normal; }
+
+@media (forced-colors: active) {
+  .pill, .panel, .captions, .fields, .meter, .status-card, .plan li.now { border: 2px solid CanvasText; }
+  .meter-fill { background: Highlight; }
+}

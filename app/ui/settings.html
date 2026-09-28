@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings</title>
+<link rel="icon" href="assets/logo.svg">
+<link rel="stylesheet" href="shared.css">
+<link rel="stylesheet" href="settings.css">
+<script src="demo-stub.js"></script>
+<script src="assets/icons.js"></script>
+</head>
+<body class="settings">
+  <header class="s-top">
+    <img src="assets/logo.svg" width="56" height="56" alt="">
+    <div>
+      <h1 id="s-title">Settings</h1>
+      <p class="muted">For the family member who sets things up.</p>
+    </div>
+  </header>
+  <main id="app"></main>
+  <footer id="status-bar" class="status-bar" hidden>
+    <p id="status" role="status"></p>
+    <button type="button" id="rerun"></button>
+  </footer>
+  <script src="settings.js"></script>
+</body>
+</html>

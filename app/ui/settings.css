@@ -1,0 +1,87 @@
+/* Settings (for family). Still large and calm, a little denser than the launcher. Needs shared.css first. */
+body.settings { padding: 0 var(--space-4) calc(var(--target-min) + var(--space-5)); }
+.s-top { display: flex; align-items: center; gap: var(--space-3); max-width: 960px; margin: 0 auto; padding: var(--space-3) 0 var(--space-2); }
+.s-top h1 { font-size: var(--fs-h2); }
+.s-top p { margin: 0; }
+#app { max-width: 960px; margin: 0 auto; display: grid; gap: var(--space-3); }
+
+.s-card h2 { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); }
+.s-card h2 .icon { width: 1.2em; height: 1.2em; color: var(--primary); flex: none; }
+.s-card h3 { font-size: var(--fs-body); margin: var(--space-3) 0 var(--space-1); }
+.s-card p { margin: 0 0 var(--space-2); }
+.intro { color: var(--text-2); }
+.hint { font-size: var(--fs-min); color: var(--text-2); margin: -4px 0 var(--space-1) !important; }
+
+.field { margin: var(--space-2) 0; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 0 var(--space-3); }
+.row { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-2) 0; }
+
+/* choice buttons: picked = soft background + 3 px border + tick + "Chosen" */
+.choices { display: grid; gap: var(--space-2); margin: var(--space-2) 0; }
+.choices.two-col { grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); }
+.choices.three { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.choice { justify-content: space-between; flex-wrap: wrap; gap: 2px var(--space-2); text-align: left; padding: var(--space-1) var(--space-3); min-height: var(--target-min); }
+.choice-text { display: flex; flex-direction: column; flex: 1 1 8ch; min-width: 0; }
+.choice-text small { font-weight: var(--fw-body); color: var(--text-2); }
+.choice[aria-pressed="true"] .choice-text small { color: var(--primary-ink); }
+.choice .chosen .icon { width: 1.2em; height: 1.2em; }
+
+.samples { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.sample { align-items: flex-start; flex-direction: column; justify-content: flex-start; gap: var(--space-1); padding: var(--space-2) var(--space-3); }
+.sample-text { font-weight: var(--fw-body); line-height: 1.35; }
+.stepper { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.stepper p { margin: 0; }
+
+.contact { border: var(--border-w) solid var(--border); border-radius: var(--radius); padding: var(--space-2) var(--space-3); margin: 0 0 var(--space-3); }
+.contact legend { font-weight: var(--fw-strong); padding: 0 var(--space-1); }
+.undo { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
+.remove { color: var(--danger); }
+.remove:hover { background: var(--surface); color: var(--danger); border-color: var(--danger); }
+.remove .icon { color: var(--danger); }
+
+.howto { margin: var(--space-3) 0 var(--space-2); }
+.howto h3 { margin-top: 0; }
+.howto ol, .howto-plain { margin: 0; padding-left: 1.4em; }
+.howto li, .howto-plain li { margin: 4px 0; }
+.ok-line { display: flex; align-items: center; gap: var(--space-1); color: var(--success); font-weight: var(--fw-strong); }
+.ok-line .icon { width: 1.3em; height: 1.3em; }
+.key-row { display: flex; gap: var(--space-2); }
+.key-row input { flex: 1; font-family: Consolas, "Cascadia Mono", monospace; }
+
+/* wizard */
+.progress { margin: 0; display: grid; gap: var(--space-1); }
+.bar { display: block; height: 12px; border-radius: var(--radius-pill); background: var(--primary-soft); border: 1px solid var(--border); overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--primary); }
+.wiz-nav { display: flex; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-2); }
+.wiz-nav .primary { margin-left: auto; padding: 0 var(--space-4); }
+.welcome { display: grid; gap: var(--space-2); justify-items: start; }
+.welcome h2 { font-size: var(--fs-h1); }
+.trust-card { display: flex; gap: var(--space-2); align-items: flex-start; background: var(--primary-soft); color: var(--primary-ink);
+              border: var(--border-w) solid var(--primary); border-radius: var(--radius); padding: var(--space-2) var(--space-3); }
+.trust-card .icon { width: 48px; height: 48px; flex: none; color: var(--primary-ink); }
+.trust-card p { margin: 4px 0 0; }
+.summary { margin: 0; display: grid; gap: 0; }
+.summary div { display: grid; grid-template-columns: 260px 1fr; gap: var(--space-2); padding: var(--space-1) 0; border-bottom: 1px solid var(--primary-soft); }
+.summary dt { font-weight: var(--fw-strong); color: var(--text-2); }
+.summary dd { margin: 0; }
+
+/* all settings on one page */
+.jump { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-2); }
+.jump button { justify-content: flex-start; text-align: left; font-size: var(--fs-min); padding: 0 var(--space-2); }
+.jump .icon { color: var(--primary); }
+.jump button:hover .icon { color: var(--primary-ink); }
+.top-notice { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin: 0; }
+.status-bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+              padding: var(--space-1) var(--space-4); background: var(--surface); border-top: var(--border-w) solid var(--border); }
+.status-bar p { margin: 0; font-weight: var(--fw-strong); }
+.status-bar button { font-size: var(--fs-min); }
+
+@media (max-width: 700px) { .summary div { grid-template-columns: 1fr; } }
+
+/* alert code, safety diary, privacy, delete confirm card */
+input.code { font-family: Consolas, "Cascadia Mono", monospace; letter-spacing: 0.04em; }
+.diary, .plain { margin: 0; padding-left: 1.4em; }
+.diary li, .plain li { margin: var(--space-1) 0; }
+.diary .empty { list-style: none; margin-left: -1.4em; color: var(--text-2); }
+.confirm-card { border: var(--border-w) solid var(--danger); border-radius: var(--radius); padding: var(--space-2) var(--space-3); }
+.confirm-card h3 { margin-top: 0; font-size: var(--fs-h3); }

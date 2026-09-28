@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barnaby</title>
+<link rel="icon" href="assets/logo.svg">
+<link rel="stylesheet" href="shared.css">
+<link rel="stylesheet" href="launcher.css">
+<script src="demo-stub.js"></script>
+<script src="assets/icons.js"></script>
+<script src="status.js"></script>
+</head>
+<body class="launcher">
+  <header class="top" aria-label="Today">
+    <img class="brand" src="assets/logo.svg" alt="Barnaby" width="64" height="64">
+    <div class="hello">
+      <h1 id="greeting">Hello</h1>
+      <p id="weather" class="weather muted" hidden></p>
+    </div>
+    <div class="when" aria-live="off">
+      <div id="clock" class="clock">--:--</div>
+      <div id="date" class="date"></div>
+    </div>
+  </header>
+
+  <div class="middle">
+  <main id="main" tabindex="-1">
+    <section id="home-view" aria-label="Things you can do">
+      <div id="tiles" class="tiles"></div>
+    </section>
+
+    <section id="family-view" class="view" hidden aria-labelledby="family-title">
+      <div class="view-bar">
+        <button type="button" class="back" data-go="home"></button>
+        <h2 id="family-title" tabindex="-1">Family</h2>
+      </div>
+      <div id="family-list" class="people"></div>
+    </section>
+
+    <section id="lessons-view" class="view" hidden aria-labelledby="lessons-title">
+      <div id="lessons-root"></div>
+    </section>
+
+  </main>
+  <button type="button" id="more" class="more" hidden></button>
+  </div>
+
+  <footer class="band">
+    <button type="button" id="talk" class="primary hero talk">
+      <span class="talk-icon"></span>
+      <span class="talk-words"><span id="talk-label">Talk</span><small id="talk-sub">or press F9</small></span>
+    </button>
+    <div class="small-row">
+      <button type="button" id="settings-btn" class="small-btn"></button>
+      <button type="button" id="desktop-btn" class="small-btn"></button>
+    </div>
+    <p id="trust" class="trust muted"></p>
+  </footer>
+
+  <script src="lessons.js"></script>
+  <script src="launcher.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="56" height="56" role="img" aria-label="Barnaby">
+  <title>Barnaby</title>
+  <circle cx="128" cy="128" r="128" fill="#0B4A8B"/>
+  <g transform="translate(2 16)">
+    <g fill="#FFFFFF">
+      <path d="M85 47H134A37 37 0 0 1 134 121H75V57A10 10 0 0 1 85 47Z"/>
+      <path d="M75 95H140A41 41 0 0 1 140 177H85A10 10 0 0 1 75 167Z"/>
+    </g>
+    <g fill="#0B4A8B">
+      <path d="M101 73H134A11 11 0 0 1 134 95H101Z"/>
+      <path d="M101 121H140A15 15 0 0 1 140 151H101Z"/>
+    </g>
+  </g>
+  <circle cx="198" cy="64" r="19" fill="#FFB000"/>
+</svg>

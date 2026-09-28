@@ -1,0 +1,703 @@
+// Tool schemas (OpenAI function tools) + executors for the agent.
+// execute({name, args}, ctx) -> Promise<string> (the tool result the brain reads).
+// ctx (built by agent.js): {mode, goal, settings, config, native, ui, guardian, memory, support, apps,
+//   log, obs:{img, elements:Map, window, complete}, steps:[], finished, screenChanged, timing:{settle, open},
+//   heard:[the person's own words], scamContext, remote() (R16), check(), sleep(ms)}
+// Every acting tool goes through ONE gate here: hard rules -> guardian -> confirm card -> say(explain)
+// -> act -> settle -> record the step for the lesson.
+
+const EXPLAIN = {
+  type: 'string',
+  description: 'One short spoken sentence, said BEFORE you act: what you are doing, where it is on the screen ' +
+    '(colour, position, label) and why. Example: "I\'m clicking the red Compose button at the top left. That starts a new email."',
+};
+const ELEMENT_ID = { type: 'integer', description: 'Number of the item from the list of things on screen (preferred).' };
+const X = { type: 'number', description: 'Screenshot x (pixels) of the CENTRE of the target, only when it has no number.' };
+const Y = { type: 'number', description: 'Screenshot y (pixels) of the CENTRE of the target.' };
+
+const fn = (name, description, properties, required) =>
+  ({ type: 'function', function: { name, description, parameters: { type: 'object', properties, required } } });
+
+const ALL = [
+  fn('click', 'Click something on the screen yourself. Never for the final Send / Pay / Buy / Submit / Delete button (use guide_user so the person presses it).',
+    { element_id: ELEMENT_ID, x: X, y: Y, double: { type: 'boolean', description: 'Double-click (only when really needed, e.g. to open a file).' }, explain: EXPLAIN },
+    ['explain']),
+  fn('type_text', 'Type text into the box that is ready for typing (click the box first). Never passwords, codes, card, bank or ID numbers: the person types those.',
+    { text: { type: 'string' }, explain: EXPLAIN }, ['text', 'explain']),
+  fn('press_keys', 'Press keys, e.g. "enter", "ctrl+a", "esc", "win", or several in a row separated by spaces: "tab tab enter".',
+    { keys: { type: 'string' }, explain: EXPLAIN }, ['keys', 'explain']),
+  fn('scroll', 'Scroll the page up or down.',
+    { direction: { type: 'string', enum: ['up', 'down'] }, amount: { type: 'integer', description: 'Mouse-wheel notches, 1-15 (default 5).' }, element_id: ELEMENT_ID, explain: EXPLAIN },
+    ['direction', 'explain']),
+  fn('open', 'Open a program or web site: a known name ("gmail", "outlook", "aol", "yahoo", "icloud photos", "google photos", "windows photos", "zoom", "whatsapp", "facebook", "youtube", "news", "weather", "solitaire", "sound settings", "display settings", "wifi", "files", "downloads", "browser", "my email", "my photos") or a full web address starting with https://.',
+    { target: { type: 'string' }, explain: EXPLAIN }, ['target', 'explain']),
+  fn('wait', 'Wait a few seconds for something to load.', { seconds: { type: 'number', description: '1-10' } }, ['seconds']),
+  fn('say', 'Tell the person something out loud without asking anything: what you found, or what changed on the screen. One to three short, plain sentences. Not for questions (ask_user) or for the explain of an action.',
+    { text: { type: 'string' } }, ['text']),
+  fn('ask_user', 'Ask the person ONE short question. Give 2-5 short answer buttons when you can (include "I\'m not sure" when it fits). Leave choices out only for a free answer like a name or a message.',
+    { question: { type: 'string' }, choices: { type: 'array', items: { type: 'string' } } }, ['question']),
+  fn('guide_user', 'Point at something with a big ring and arrow and let the PERSON do it (click, type, pick a photo, type a password, press Send). Waits for their real click or for "I did it".',
+    {
+      element_id: ELEMENT_ID, x: X, y: Y,
+      w: { type: 'number', description: 'Width of the area in screenshot pixels (optional).' },
+      h: { type: 'number', description: 'Height of the area in screenshot pixels (optional).' },
+      instruction: { type: 'string', description: 'What the person should do, in one short sentence with colour and position, e.g. "Please click the blue Send button at the bottom left."' },
+      wait_for: { type: 'string', enum: ['click', 'done'], description: '"click" = one click on the ring; "done" = typing, choosing, or several clicks (they press "I did it").' },
+    }, ['instruction']),
+  fn('confirm', 'Show a big card with the exact details and ask Yes or No. REQUIRED before anything that sends, buys, pays, posts, deletes or changes settings. For an email use fields To (full address), Subject, Message, Attachments.',
+    {
+      title: { type: 'string' },
+      fields: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, value: { type: 'string' } }, required: ['label', 'value'] } },
+      question: { type: 'string', description: 'e.g. "Is this all correct?"' },
+    }, ['title', 'fields', 'question']),
+  fn('remember', 'Save a lasting fact so you never ask again, as "Label: value" (e.g. "Email: Gmail", "Anne Marie: annemarie@example.com (friend)", "Photos: iCloud"). Facts must come from what the person told you; which email or photo service they use may also come from the screen (set email_provider / photos_provider). Never passwords or codes.',
+    {
+      fact: { type: 'string' },
+      email_provider: { type: 'string', enum: ['gmail', 'outlook', 'outlook-app', 'aol', 'yahoo'], description: 'Set when the fact is which email they use.' },
+      photos_provider: { type: 'string', enum: ['icloud', 'google', 'windows'], description: 'Set when the fact is where their photos are.' },
+    }, ['fact']),
+  fn('run_check', 'Run a safe, read-only check of this computer (see the list of checks).', { name: { type: 'string' } }, ['name']),
+  fn('apply_fix', 'Apply one safe fix from the list. The person is asked yes or no first, automatically.',
+    {
+      name: { type: 'string' }, arg: { type: 'string', description: 'Only for fixes that need one (e.g. the program name).' },
+      explain: { type: 'string', description: 'One short sentence on what it does for them and that it is safe, spoken after "Shall I ...?". Example: "It frees up storage space; your photos and files are not touched."' },
+    }, ['name', 'explain']),
+  fn('set_plan', 'At the start of anything with more than 2 steps, list the steps in plain words so the person can see the whole plan and follow along. Call it again as you move on, with "current" set to the step you are on now.',
+    {
+      steps: { type: 'array', items: { type: 'string' }, description: 'Short plain phrases, one per step, e.g. ["Open your email", "Write the message", "Send it"]. 2 to 8 steps.' },
+      current: { type: 'integer', description: 'The step you are working on right now (1 = the first). Leave out at the start.' },
+    }, ['steps']),
+  fn('update_settings', 'Change one of your OWN settings when the person asks (for example smaller or bigger text, slower speech, mute, their name, the town). Only after the tool result says it is done may you tell them you did it.',
+    {
+      changes: {
+        type: 'object',
+        description: 'The settings to change. Keys: textScale ("smaller" / "bigger" / a number 1.0-1.6), speechRate ("slower" / "faster" / 0.7-1.1), muted (true/false), voiceName, mode ("together"/"teach"/"do"), wakeWord (true/false), city, userName. Anything else is not allowed and is for the family in Settings.',
+      },
+      explain: { type: 'string', description: 'One short plain sentence on what you are changing for them.' },
+    }, ['changes']),
+  fn('run_command', 'Run one Windows PowerShell command on this computer when it is the right tool for the job (a check or a fix the safe list does not cover). Prefer run_check and apply_fix when they cover it. Read-only checks (Get-..., Test-...) run on their own; anything that changes the computer shows the person a card first. It runs with administrator rights, so be careful and precise.',
+    {
+      command: { type: 'string', description: 'The exact PowerShell command.' },
+      explain: { type: 'string', description: 'One short plain sentence for the person: what this does and why, no jargon.' },
+      purpose: { type: 'string', description: 'A few words on what you are trying to achieve (for your own record).' },
+    }, ['command', 'explain']),
+  fn('done', 'The task is finished (or the person wants to stop).',
+    { summary: { type: 'string', description: 'One or two warm sentences: what you did together.' }, lesson_title: { type: 'string', description: 'Short title in the person\'s own words, e.g. "Send photos to Anne Marie".' } },
+    ['summary']),
+];
+
+const TEACH_OFF = new Set(['click', 'type_text', 'press_keys', 'scroll']);
+const SUPPORT_ON = new Set(['run_check', 'apply_fix', 'run_command', 'say', 'ask_user', 'open', 'set_plan', 'done']);
+// The chat path has tools too (the bug: it used to have none and claimed changes it could not make).
+const CHAT_ON = new Set(['update_settings', 'remember', 'ask_user', 'open', 'run_check', 'run_command', 'say', 'done']);
+
+function schemas(mode) {
+  if (mode === 'support') return ALL.filter((t) => SUPPORT_ON.has(t.function.name));
+  if (mode === 'chat') return ALL.filter((t) => CHAT_ON.has(t.function.name));
+  if (mode === 'teach') return ALL.filter((t) => !TEACH_OFF.has(t.function.name));
+  return ALL.slice();
+}
+
+// ---------- coordinates: image px (what the model sees) <-> physical px (native helper) ----------
+function toPhysical(img, x, y) {
+  return { x: Math.round(img.originX + x * img.factor), y: Math.round(img.originY + y * img.factor) };
+}
+function toImage(img, x, y) {
+  return { x: Math.round((x - img.originX) / img.factor), y: Math.round((y - img.originY) / img.factor) };
+}
+function toImageRect(img, rect) {
+  const p = toImage(img, rect[0], rect[1]);
+  return [p.x, p.y, Math.round(rect[2] / img.factor), Math.round(rect[3] / img.factor)];
+}
+function imageRectToPhysical(img, rect) {
+  const p = toPhysical(img, rect[0], rect[1]);
+  return [p.x, p.y, Math.round(rect[2] * img.factor), Math.round(rect[3] * img.factor)];
+}
+const center = (r) => ({ x: Math.round(r[0] + r[2] / 2), y: Math.round(r[1] + r[3] / 2) });
+
+// ---------- helpers ----------
+// Final, irreversible buttons: the person always presses these (backs up the guardian).
+const FINAL = /^(send|send now|send email|pay|pay now|place (your )?order|buy|buy now|purchase|complete (purchase|order)|confirm (purchase|payment|order)|submit|submit payment|delete|delete forever|delete account|post|transfer|checkout|check out)$/i;
+const num = (v) => typeof v === 'number' && Number.isFinite(v);
+const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+const safe = (f) => { try { return f(); } catch (_) { return null; } };
+const POSITIONAL = new Set(['click', 'scroll', 'guide_user']);
+const ACTS = new Set(['click', 'type_text', 'press_keys', 'scroll', 'open', 'apply_fix']); // tools that go through act()
+const CHANGES_SCREEN = new Set(['click', 'type_text', 'press_keys', 'scroll', 'open', 'guide_user', 'apply_fix']);
+
+function elById(ctx, id) {
+  const els = ctx.obs && ctx.obs.elements;
+  return (els && els.get(Number(id))) || null;
+}
+// Smallest element containing a physical point (to name x,y clicks and catch Send buttons).
+function elementAt(ctx, x, y) {
+  const els = ctx.obs && ctx.obs.elements;
+  if (!els) return null;
+  let best = null;
+  for (const e of els.values()) {
+    const r = e.rect;
+    if (!r || x < r[0] || y < r[1] || x > r[0] + r[2] || y > r[1] + r[3]) continue;
+    if (!best || r[2] * r[3] < best.rect[2] * best.rect[3]) best = e;
+  }
+  return best;
+}
+function focused(ctx) {
+  const els = ctx.obs && ctx.obs.elements;
+  if (els) for (const e of els.values()) if (e.focused) return e;
+  return null;
+}
+const elName = (e) => (e ? clip((e.name || '').trim() || e.role || '', 60) : '');
+
+// Time spent waiting on the person does not count toward the task's wall-clock limit.
+async function waiting(ctx, promise) {
+  const t0 = Date.now();
+  try { return await promise; } finally { ctx.waitedMs = (ctx.waitedMs || 0) + (Date.now() - t0); }
+}
+
+async function ask(ctx, opts) {
+  try {
+    const a = await waiting(ctx, Promise.resolve().then(() => ctx.ui.ask(opts)));
+    ctx.check();
+    const ans = String(a == null ? '' : a).trim();
+    if (ans && ctx.heard) ctx.heard.push(ans); // the person's own words (R18)
+    return ans;
+  } catch (_) {
+    ctx.check(); // stopped -> abort the task; otherwise the question was just closed
+    return null;
+  }
+}
+
+function record(ctx, text, action, target) {
+  if (text) ctx.steps.push({ text: clip(text, 300), action, target: clip(target || '', 120) });
+}
+
+function refused(ctx, g) {
+  const reason = (g && g.reason) || 'That is not safe for me to do.';
+  if (g && g.redirect === 'guide_user') {
+    return 'REFUSED: ' + reason + ' The person must press this themselves: use guide_user to point at it.';
+  }
+  // Safety diary (main.js): rule id only, never page text.
+  if (g && g.rule && g.rule !== 'final' && ctx.emit) safe(() => ctx.emit('refused', { rule: g.rule }));
+  return ctx.ui.say(reason).then(() => { ctx.check(); return 'REFUSED: ' + reason; });
+}
+
+// What the guardian knows about this moment (04_safety context). The element keeps the native secret-field flags.
+function gctxOf(ctx, element) {
+  const w = (ctx.obs && ctx.obs.window) || {};
+  return {
+    goal: ctx.goal, mode: ctx.mode, window: { title: w.title || '', process: w.process || '' },
+    element: element ? { name: element.name || '', role: element.role || '', password: !!(element.password || element.isPassword), private: !!element.private } : { name: '' },
+    scamContext: !!ctx.scamContext, // R17: a scam episode is on, so nothing is routine
+    remoteSession: !!(ctx.remote && ctx.remote()), // R16
+    heard: ctx.heard || [ctx.goal],
+  };
+}
+
+// The single gate every acting tool passes through.
+async function act(ctx, tool, args, { what, target, element, perform, alwaysConfirm, ring, question }) {
+  const action = { tool, args };
+  // A yes on the helper's own confirm card, for the very next action only (execute() clears it otherwise);
+  // the guardian lets it soften only a model "confirm", never a rule's.
+  const gctx = { ...gctxOf(ctx, element), confirmed: !!ctx.saidYes };
+  ctx.saidYes = false;
+  let g = null;
+  try {
+    g = await ctx.guardian.gateAction(action, gctx);
+  } catch (e) {
+    // Guardian broke: the hard rules still apply, everything else needs the person's yes.
+    if (ctx.log) ctx.log('gateAction failed, asking the person instead', e.message);
+    const hard = safe(() => ctx.guardian.hardCheck(action, gctx));
+    g = hard && hard.verdict === 'refuse' ? hard : null;
+  }
+  ctx.check();
+  if (!g || !g.verdict) g = { verdict: 'confirm', reason: '' };
+  if (g.verdict === 'refuse') return refused(ctx, g);
+  const explain = String(args.explain || '').trim();
+  if (g.verdict === 'confirm' || alwaysConfirm) {
+    // Ask BEFORE doing it: never "I'm clicking ... Shall I go ahead?". A rule that words its own question wins.
+    const q = question || (g.reason && /\?\s*$/.test(g.reason) ? g.reason : 'Shall I ' + what.charAt(0).toLowerCase() + what.slice(1) + '?');
+    const ans = await ask(ctx, {
+      question: q,
+      kind: 'confirm',
+      details: { title: 'Is this okay?', fields: [{ label: 'What I will do', value: what }].concat(explain ? [{ label: 'Why', value: explain }] : []) },
+    });
+    if (ans === null) return 'The question was closed, so I did not do it.';
+    if (ans !== 'yes') return ans === 'no' ? 'The person said no, so I did not do it. Ask what they would like instead.' : 'I did not do it. The person said: "' + ans + '"';
+  } else if (explain) {
+    // UX 10/14: ring the target while explaining, >= 1.2 s, so the person sees WHERE before it happens.
+    const t0 = Date.now();
+    if (ring) safe(() => ctx.ui.highlight(ring, explain, { dim: false })); // own click: no spotlight dimming
+    await ctx.ui.say(explain);
+    ctx.check();
+    if (ring) {
+      const left = 1200 - (Date.now() - t0);
+      if (left > 0) await ctx.sleep(left);
+      safe(() => ctx.ui.clearOverlay());
+      ctx.check();
+    }
+  }
+  ctx.status({ state: 'acting', step: ctx.steps.length + 1, totalSteps: ctx.totalSteps, label: explain || what });
+  const res = await perform();
+  ctx.check();
+  record(ctx, explain || what, tool, target || what);
+  await ctx.sleep(tool === 'open' ? ctx.timing.open : ctx.timing.settle);
+  return res;
+}
+
+// ---------- executors ----------
+function resolvePoint(ctx, args) {
+  if (args.element_id != null) {
+    const el = elById(ctx, args.element_id);
+    if (!el) return { error: 'ERROR: there is no item [' + args.element_id + '] on the current screen. Look at the list again.' };
+    return { el, p: center(el.rect) };
+  }
+  if (num(args.x) && num(args.y)) {
+    const img = ctx.obs && ctx.obs.img;
+    if (!img) return { error: 'ERROR: there is no screenshot to measure from. Use an item number.' };
+    const p = toPhysical(img, args.x, args.y);
+    return { el: elementAt(ctx, p.x, p.y), p };
+  }
+  return { error: 'ERROR: give element_id, or x and y.' };
+}
+
+async function click(ctx, args) {
+  const r = resolvePoint(ctx, args);
+  if (r.error) return r.error;
+  const name = elName(r.el);
+  if (r.el && FINAL.test(String(r.el.name || '').trim())) {
+    return refused(ctx, { verdict: 'refuse', redirect: 'guide_user', reason: 'The "' + name + '" button is for the person to press.' });
+  }
+  const double = !!args.double;
+  return act(ctx, 'click', args, {
+    what: 'Click ' + (name ? '"' + name + '"' : 'here'),
+    target: name, element: r.el,
+    // A point with no item under it, when the item list was cut short: it could be an unlisted Send button.
+    alwaysConfirm: !r.el && !(ctx.obs && ctx.obs.complete),
+    ring: r.el && r.el.rect ? r.el.rect : [r.p.x - 24, r.p.y - 24, 48, 48],
+    perform: async () => {
+      if (args.element_id != null) {
+        try {
+          await ctx.native.call('click_element', { id: Number(args.element_id), double }, 8000);
+          return 'Clicked [' + args.element_id + '] ' + name + '.';
+        } catch (_) { /* element went stale: click its centre instead */ }
+      }
+      await ctx.native.call('click', { x: r.p.x, y: r.p.y, button: 'left', double }, 8000);
+      return 'Clicked ' + (name ? '"' + name + '"' : 'at ' + args.x + ',' + args.y) + '.';
+    },
+  });
+}
+
+async function typeText(ctx, args) {
+  // A trailing newline is typed as the Enter key, which sends in chat apps: Enter is press_keys' job.
+  const text = String(args.text == null ? '' : args.text).replace(/[\r\n\t]+$/, '');
+  if (!text) return 'ERROR: text is empty.';
+  args = { ...args, text };
+  return act(ctx, 'type_text', args, {
+    what: 'Type: ' + clip(text, 200), target: clip(text, 80), element: focused(ctx),
+    perform: async () => {
+      if (ctx.focusTarget) await ctx.focusTarget();
+      await ctx.native.call('type', { text }, 60000);
+      return 'Typed the text.';
+    },
+  });
+}
+
+async function pressKeys(ctx, args) {
+  const combos = String(args.keys || '').toLowerCase().split(/[\s,]+/).filter(Boolean).slice(0, 12);
+  if (!combos.length || combos.some((c) => !/^[a-z0-9+]+$/.test(c))) return 'ERROR: keys should look like "enter", "ctrl+a" or "tab tab enter".';
+  const explain = String(args.explain || '').trim();
+  return act(ctx, 'press_keys', args, {
+    what: 'Press ' + combos.join(', then '), target: combos.join(' '), element: focused(ctx), // Enter on a focused Send
+    // "Shall I press esc, then ctrl+w?" means nothing to most people; the explain says what it does.
+    question: explain ? explain.replace(/[.!]?\s*$/, '.') + ' Is that all right?' : '',
+    perform: async () => {
+      if (ctx.focusTarget) await ctx.focusTarget();
+      for (const combo of combos) {
+        await ctx.native.call('key', { combo }, 5000);
+        if (combos.length > 1) await ctx.sleep(120);
+      }
+      return 'Pressed ' + combos.join(' ') + '.';
+    },
+  });
+}
+
+async function scroll(ctx, args) {
+  const down = args.direction !== 'up';
+  const amount = Math.max(1, Math.min(15, Math.round(num(args.amount) ? args.amount : 5)));
+  let p;
+  if (args.element_id != null) {
+    const el = elById(ctx, args.element_id);
+    if (!el) return 'ERROR: there is no item [' + args.element_id + '] on the current screen.';
+    p = center(el.rect);
+  } else if (ctx.obs && ctx.obs.window && Array.isArray(ctx.obs.window.rect)) {
+    p = center(ctx.obs.window.rect);
+  } else if (ctx.obs && ctx.obs.img) {
+    p = toPhysical(ctx.obs.img, ctx.obs.img.width / 2, ctx.obs.img.height / 2);
+  } else return 'ERROR: I cannot tell where to scroll.';
+  return act(ctx, 'scroll', args, {
+    what: 'Scroll ' + (down ? 'down' : 'up'), target: '',
+    perform: async () => { await ctx.native.call('scroll', { x: p.x, y: p.y, amount: down ? -amount : amount }, 5000); return 'Scrolled ' + (down ? 'down.' : 'up.'); },
+  });
+}
+
+const REMOTE_MSG = 'I won\'t open that one. Programs that let someone else control your computer are how many scams start. ' +
+  'If someone on the phone asked you to install it, it is safest to hang up.';
+
+async function open(ctx, args) {
+  const target = String(args.target || '').trim();
+  if (!target) return 'ERROR: target is empty.';
+  const isRemote = (s) => !!safe(() => ctx.guardian.isRemoteAccess(s));
+  // Through refused(): the safety diary and the family alert (R1) must hear about the most common attempt.
+  const remoteNo = () => refused(ctx, { verdict: 'refuse', rule: 'R1', reason: REMOTE_MSG })
+    .then(() => 'REFUSED: remote-access tools are never opened. Tell the person calmly why, and do not try another way.');
+  if (isRemote(target)) return remoteNo();
+  const r = ctx.apps.resolve(target, ctx.settings);
+  if (!r && /mail|photo|picture|video/i.test(target)) {
+    return 'ERROR: I do not know which one they use yet. Ask with ask_user (for example Gmail, Outlook, AOL, Yahoo, I\'m not sure), remember the answer, then open it by name.';
+  }
+  if (!r) {
+    return 'ERROR: I do not know how to open "' + target + '". Use a full web address (https://...), or the Start menu: ' +
+      'press_keys "win", type_text the program name, press_keys "enter".';
+  }
+  if (isRemote(r.value)) return remoteNo();
+  if (ctx.mode === 'support' && !/^ms-settings:/.test(r.value)) return 'ERROR: here you can only open settings pages (for example "sound settings" or "wifi").';
+  return act(ctx, 'open', { ...args, resolved: r.value }, {
+    what: 'Open ' + r.label, target: r.label,
+    perform: async () => {
+      safe(() => ctx.ui.hideLauncher());
+      try {
+        await ctx.native.call('open', r.args ? { target: r.value, args: r.args } : { target: r.value }, 15000);
+      } catch (e) {
+        if (!r.fallback) throw e;
+        await ctx.native.call('open', { target: r.fallback }, 15000);
+      }
+      return 'Opened ' + r.label + '. Look at the new screen before the next step.';
+    },
+  });
+}
+
+async function wait(ctx, args) {
+  const s = Math.max(0, Math.min(10, num(args.seconds) ? args.seconds : 2));
+  ctx.status({ state: 'waiting', label: 'Waiting a moment…' });
+  await ctx.sleep(s * 1000);
+  return 'Waited ' + s + ' seconds.';
+}
+
+async function sayIt(ctx, args) {
+  let text = String(args.text || '').replace(/[*#`_>]+/g, '').replace(/\s+/g, ' ').trim();
+  if (!text) return 'ERROR: text is empty.';
+  if (ctx.noVouch) text = ctx.noVouch(text); // R15: chat / scam-context replies never vouch for a page or caller
+  if (!text) return 'Said.';
+  if (ctx.said) ctx.said.push(text);
+  await ctx.ui.say(text);
+  ctx.check();
+  return 'Said.';
+}
+
+async function askUser(ctx, args) {
+  const question = String(args.question || '').trim();
+  if (!question) return 'ERROR: question is empty.';
+  const choices = Array.isArray(args.choices) ? args.choices.map((c) => clip(String(c).trim(), 60)).filter(Boolean).slice(0, 5) : [];
+  ctx.status({ state: 'waiting', label: question });
+  const ans = await ask(ctx, { question, choices, kind: choices.length ? 'choice' : 'text' });
+  if (ans === null) return 'The question was closed without an answer.';
+  return 'The person answered: "' + ans + '"';
+}
+
+async function guideUser(ctx, args) {
+  const instruction = String(args.instruction || '').trim();
+  if (!instruction) return 'ERROR: instruction is empty.';
+  let rect = null, el = null;
+  if (args.element_id != null) {
+    el = elById(ctx, args.element_id);
+    if (!el) return 'ERROR: there is no item [' + args.element_id + '] on the current screen.';
+    rect = el.rect;
+  } else if (num(args.x) && num(args.y) && ctx.obs && ctx.obs.img) {
+    const w = num(args.w) && args.w > 4 ? args.w : 90, h = num(args.h) && args.h > 4 ? args.h : 60;
+    rect = imageRectToPhysical(ctx.obs.img, [args.x - w / 2, args.y - h / 2, w, h]);
+    el = elementAt(ctx, rect[0] + rect[2] / 2, rect[1] + rect[3] / 2);
+  }
+  // The person does it, but the helper's ring and voice must never lead them to a remote tool, a gift card,
+  // a money exit or a security switch (6.1 #1, R6): the never-rules apply to guided steps too.
+  const g = safe(() => ctx.guardian.hardCheck({ tool: 'guide_user', args: { ...args, instruction } }, gctxOf(ctx, el)));
+  if (g && g.verdict === 'refuse') return refused(ctx, g);
+  const waitClick = args.wait_for !== 'done' && !!rect;
+  record(ctx, instruction, 'guide_user', elName(el));
+  if (rect) ctx.ui.highlight(rect, instruction);
+  ctx.status({ state: 'waiting', step: ctx.steps.length, totalSteps: ctx.totalSteps, label: instruction });
+  const choices = waitClick ? ['I did it', 'Please do it for me', 'I need help'] : ['I did it', 'I need help'];
+  const askW = Promise.resolve().then(() => ctx.ui.ask({ question: instruction, choices, kind: 'choice' }))
+    .then((a) => ({ answer: String(a == null ? '' : a).trim() }), () => ({ closed: true }));
+  let out;
+  if (waitClick) {
+    const clickW = ctx.native.call('wait_click', { timeoutMs: 180000, rect }, 190000)
+      .then((c) => ({ click: c || {} }), () => ({ clickFailed: true }));
+    out = await waiting(ctx, Promise.race([clickW, askW]));
+    if (out.clickFailed) out = await waiting(ctx, askW); // cannot watch the mouse: wait for their answer
+    if (out.click && out.click.clicked && !out.click.inRect) {
+      // A tap on our own panel ("I need help") reaches the mouse hook first: give its answer a moment.
+      const late = await Promise.race([askW, new Promise((r) => setTimeout(() => r(null), 600))]);
+      if (late) out = late;
+    }
+    if (out.click) safe(() => ctx.ui.cancelAsk());
+    // Answered in words: the mouse hook must not outlive the step (up to 3 minutes otherwise).
+    else await Promise.resolve().then(() => ctx.native.call('cancel_wait', {}, 3000)).catch(() => {});
+  } else {
+    out = await waiting(ctx, askW);
+  }
+  safe(() => ctx.ui.clearOverlay());
+  ctx.check();
+  if (out.click) {
+    const c = out.click;
+    if (!c.clicked) return 'The person did not click within 3 minutes. Ask gently whether they need help.';
+    if (c.inRect) return 'The person clicked inside the highlighted area.';
+    const p = ctx.obs && ctx.obs.img && num(c.x) ? toImage(ctx.obs.img, c.x, c.y) : null;
+    return 'The person clicked outside the highlighted area' + (p ? ', at x=' + p.x + ', y=' + p.y + ' (screenshot pixels).' : '.') +
+      ' Look at the screen and guide again kindly if needed.';
+  }
+  if (out.closed) return 'The question was closed without an answer.';
+  const a = out.answer;
+  if (/^i did it$/i.test(a)) return 'The person said they did it. Check the new screen.';
+  if (/^please do it for me$/i.test(a) && rect) {
+    const p = center(rect);
+    const img = ctx.obs && ctx.obs.img;
+    const n = ctx.steps.length;
+    const res = await click(ctx, el && args.element_id != null
+      ? { element_id: args.element_id, explain: 'Okay, I\'ll do this one for you.' }
+      : img ? { ...toImage(img, p.x, p.y), explain: 'Okay, I\'ll do this one for you.' } : { explain: '' });
+    ctx.steps.length = n; // the lesson keeps the instruction, not "I'll do it for you"
+    return 'The person said: "Please do it for me". ' + res;
+  }
+  if (/^i need help$/i.test(a)) return 'The person said: "I need help". Explain more simply where it is and what it looks like, then guide again.';
+  return 'The person said: "' + a + '"';
+}
+
+async function confirm(ctx, args) {
+  const title = String(args.title || 'Please check').trim();
+  const fields = (Array.isArray(args.fields) ? args.fields : [])
+    .filter((f) => f && f.label).map((f) => ({ label: clip(String(f.label), 40), value: clip(String(f.value == null ? '' : f.value), 2000) }));
+  const question = String(args.question || 'Is this all correct?').trim();
+  ctx.status({ state: 'waiting', label: title });
+  const ans = await ask(ctx, { question, kind: 'confirm', details: { title, fields } });
+  record(ctx, 'Check the details: ' + title, 'confirm', title);
+  if (ans === null) return 'The question was closed without an answer. Do not go ahead.';
+  ctx.saidYes = ans === 'yes';
+  if (ans === 'yes') return 'The person said yes, the details are correct.';
+  if (ans === 'no') return 'The person said no. Do not go ahead. Ask what they would like to change.';
+  return 'The person did not say yes. They said: "' + ans + '". Do not go ahead until they say yes.';
+}
+
+// R18 / T6: memory only from the person's own words (checked by the guardian, fail closed), and never the
+// contact list: contacts loosen the money and phone rules, so they change only in Settings.
+const EMAILS = { gmail: 'Gmail', outlook: 'Outlook', 'outlook-app': 'the Outlook app', aol: 'AOL', yahoo: 'Yahoo' };
+const PHOTOS = { icloud: 'iCloud', google: 'Google Photos', windows: 'Windows Photos' };
+
+function remember(ctx, args) {
+  let facts = [String(args.fact || '').trim()];
+  if (!facts[0]) return 'ERROR: fact is empty.';
+  const email = EMAILS[args.email_provider] ? args.email_provider : '';
+  const photos = PHOTOS[args.photos_provider] ? args.photos_provider : '';
+  let g;
+  try { g = ctx.guardian.hardCheck({ tool: 'remember', args: { fact: facts[0] } }, gctxOf(ctx)); } catch (e) { g = { verdict: 'refuse', rule: 'error' }; }
+  if (g && g.verdict === 'refuse') {
+    if (ctx.log) ctx.log('remember refused', g.rule); // silent (04_safety R18): rule id only, never the fact
+    if (g.rule !== 'R18' || !(email || photos)) return 'REFUSED: only remember what the person told you in their own words, never things from the screen, passwords or codes.';
+    // Found on the screen ("I'm not sure" -> it is Gmail), but from our own fixed list: kept in our words, not the model's.
+    facts = [email && 'Email: ' + EMAILS[email], photos && 'Photos: ' + PHOTOS[photos]].filter(Boolean);
+  }
+  for (const f of facts) ctx.memory.add(f);
+  // Keep the family settings in step, so the Email/Photos tiles work next time without asking.
+  const patch = {};
+  const s = ctx.settings || {};
+  if (email && (!s.email || s.email.provider !== email)) patch.email = { provider: email };
+  if (photos && (!s.photos || s.photos.provider !== photos)) patch.photos = { provider: photos };
+  if (Object.keys(patch).length && ctx.config && typeof ctx.config.save === 'function') {
+    try { ctx.config.save(patch); ctx.settings = ctx.config.get(); } catch (e) { if (ctx.log) ctx.log('remember: settings save failed', e.message); }
+  }
+  return 'Saved.';
+}
+
+async function runCheck(ctx, args) {
+  const name = String(args.name || '').trim();
+  if (!name) return 'ERROR: name is empty.';
+  ctx.status({ state: 'acting', label: 'Checking your computer…' });
+  let r;
+  try { r = await ctx.support.runCheck(name); } catch (e) { ctx.check(); return 'ERROR: the check "' + name + '" failed: ' + e.message; }
+  ctx.check();
+  if (!r) return 'ERROR: no result.';
+  return (r.title || name) + (r.ok === false ? ' (could not finish)' : '') + ':\n' + clip(r.text || '', 3000);
+}
+
+// support.catalog() -> [{name, title, kind:'check'|'fix', needsArg, description}] (or {checks, fixes}).
+function catalogOf(support) {
+  const cat = safe(() => support.catalog());
+  const norm = (list) => (Array.isArray(list) ? list : []).filter(Boolean).map((x) => (typeof x === 'string' ? { name: x } : x));
+  if (Array.isArray(cat)) return { checks: norm(cat.filter((x) => x && x.kind !== 'fix')), fixes: norm(cat.filter((x) => x && x.kind === 'fix')) };
+  if (cat && (cat.checks || cat.fixes)) return { checks: norm(cat.checks), fixes: norm(cat.fixes) };
+  return null;
+}
+
+async function applyFix(ctx, args) {
+  const name = String(args.name || '').trim();
+  if (!name) return 'ERROR: name is empty.';
+  const cat = catalogOf(ctx.support);
+  const fix = cat && cat.fixes.find((f) => f.name === name);
+  if (cat && !fix) return 'ERROR: there is no fix called "' + name + '". Use one from the list.';
+  if (fix && fix.needsArg && !String(args.arg || '').trim()) return 'ERROR: the fix "' + name + '" needs arg.';
+  const title = (fix && fix.title) || name.replace(/_/g, ' ');
+  const explain = String(args.explain || '').trim();
+  return act(ctx, 'apply_fix', args, {
+    what: title + (args.arg ? ': ' + args.arg : ''), target: name, alwaysConfirm: true,
+    // UX 10.7: ask first ("Shall I ...?"), then what it does for them; never "I'm doing it" before the yes.
+    question: 'Shall I ' + title.charAt(0).toLowerCase() + title.slice(1) + (args.arg && args.arg !== 'confirmed' ? ' (' + args.arg + ')' : '') + '?' + (explain ? ' ' + explain : ''),
+    perform: async () => {
+      let r;
+      try { r = await ctx.support.applyFix(name, args.arg); } catch (e) { return 'ERROR: the fix failed: ' + e.message; }
+      return (r && r.ok === false ? 'The fix did not work: ' : 'Done: ') + clip((r && r.text) || '', 1500);
+    },
+  });
+}
+
+function done(ctx, args) {
+  ctx.finished = { summary: String(args.summary || '').trim(), lesson_title: String(args.lesson_title || '').trim() };
+  return 'Finished.';
+}
+
+// ---------- set_plan: the numbered plan the widget shows, current step highlighted ----------
+function setPlan(ctx, args) {
+  const steps = (Array.isArray(args.steps) ? args.steps : []).map((s) => clip(String(s == null ? '' : s).replace(/\s+/g, ' ').trim(), 80)).filter(Boolean).slice(0, 8);
+  if (!steps.length) return 'ERROR: give the steps as short phrases.';
+  ctx.plan = steps;
+  ctx.planCurrent = Math.max(1, Math.min(steps.length, num(args.current) ? Math.round(args.current) : 1));
+  ctx.status({ state: 'thinking', label: steps[ctx.planCurrent - 1], step: ctx.planCurrent, totalSteps: steps.length });
+  return 'The plan is on the screen (' + steps.length + ' steps), the person can see it. Now do step ' + ctx.planCurrent + '.';
+}
+
+// ---------- update_settings: Barnaby changes its OWN settings, allowed keys and bounds only ----------
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const round1 = (v) => Math.round(v * 10) / 10;
+// key -> normalise(value, current) -> {value} | {error} | {atLimit}
+const SETTING_KEYS = {
+  textScale(v, cur) {
+    cur = round1(+cur || 1);
+    let next = cur;
+    if (/^small/i.test(v)) next = round1(cur - 0.2);
+    else if (/^big|^larg/i.test(v)) next = round1(cur + 0.2);
+    else if (Number.isFinite(+v)) next = round1(+v);
+    else return { error: 'say "smaller", "bigger" or a size from 1.0 to 1.6' };
+    const clamped = clamp(next, 1.0, 1.6);
+    if (clamped === cur) return { atLimit: cur <= 1.0 ? 'smallest' : 'largest' };
+    return { value: clamped };
+  },
+  speechRate(v, cur) {
+    cur = +cur || 0.9;
+    let next = cur;
+    if (/^slow/i.test(v)) next = round1(cur - 0.1);
+    else if (/^fast|^quick/i.test(v)) next = round1(cur + 0.1);
+    else if (Number.isFinite(+v)) next = round1(+v);
+    else return { error: 'say "slower", "faster" or a number from 0.7 to 1.1' };
+    const clamped = clamp(next, 0.7, 1.1);
+    if (clamped === cur) return { atLimit: cur <= 0.7 ? 'slowest' : 'fastest' };
+    return { value: clamped };
+  },
+  muted: (v) => ({ value: v === true || /^(true|yes|on|mute)/i.test(String(v)) }),
+  voiceName: (v) => ({ value: clip(String(v == null ? '' : v), 80) }),
+  mode: (v) => (/^(together|teach|do)$/i.test(String(v)) ? { value: String(v).toLowerCase() } : { error: 'the mode can be together, teach or do' }),
+  wakeWord: (v) => ({ value: v === true || /^(true|yes|on)/i.test(String(v)) }),
+  city: (v) => ({ value: clip(String(v == null ? '' : v), 60) }),
+  userName: (v) => ({ value: clip(String(v == null ? '' : v), 40) }),
+};
+const FORBIDDEN_SETTING = /^(apiKey|hasApiKey|brainModel|fallbackModel|models?|providers?|sttModel|jevModel|scamShield|scamShieldOffAt|family|alertConsent|contacts|allowCommands|startAtLogin|tiles|dockPanel|thinking|maxSteps|taskCostCapUsd|setupDone|pendingFamily)$/i;
+const FAMILY_MSG = 'Some settings, like your family contacts and the scam protection, are kept for your family to change in Settings, so nobody can talk you into turning them off.';
+
+function updateSettings(ctx, args) {
+  const changes = (args && typeof args.changes === 'object' && !Array.isArray(args.changes)) ? args.changes : null;
+  if (!changes || !Object.keys(changes).length) return 'ERROR: say which setting to change, for example smaller text.';
+  const s = ctx.settings || {};
+  const patch = {}, done = [], atLimit = [], refused = [], errors = [];
+  for (const [k, v] of Object.entries(changes)) {
+    if (FORBIDDEN_SETTING.test(k) || !SETTING_KEYS[k]) { refused.push(k); continue; }
+    const r = SETTING_KEYS[k](v, s[k]);
+    if (r.error) { errors.push(k + ': ' + r.error); continue; }
+    if (r.atLimit) { atLimit.push(k + ' is already the ' + r.atLimit); continue; }
+    patch[k] = r.value;
+    done.push(k + ': ' + JSON.stringify(s[k] == null ? '' : s[k]) + ' -> ' + JSON.stringify(r.value));
+  }
+  if (Object.keys(patch).length) {
+    try {
+      if (ctx.config && typeof ctx.config.save === 'function') { ctx.config.save(patch); ctx.settings = ctx.config.get(); }
+      else return 'ERROR: I could not reach my settings just now, so nothing changed. Tell the person it did not work.';
+    } catch (e) { if (ctx.log) ctx.log('update_settings save failed', e.message); return 'ERROR: I could not save that, so nothing changed. Tell the person it did not work.'; }
+  }
+  const parts = [];
+  if (done.length) parts.push('CHANGED (now say it is done): ' + done.join('; '));
+  if (atLimit.length) parts.push('NOT CHANGED (' + atLimit.join('; ') + '), so tell the person it is already as far as it goes.');
+  if (refused.length) parts.push('NOT ALLOWED: ' + refused.join(', ') + '. ' + FAMILY_MSG);
+  if (errors.length) parts.push('COULD NOT: ' + errors.join('; '));
+  return parts.join('\n') || 'Nothing to change.';
+}
+
+// ---------- run_command: guarded PowerShell, the app's own (administrator) rights ----------
+const CMD_OUT_MAX = 4000;
+async function runCommand(ctx, args) {
+  const command = String(args.command == null ? '' : args.command).trim();
+  const explain = String(args.explain || '').trim();
+  if (!command) return 'ERROR: there was no command.';
+  if (ctx.settings && ctx.settings.allowCommands === false) return 'REFUSED: running commands is switched off in Settings.';
+  let g;
+  try { g = ctx.guardian.commandCheck(command, gctxOf(ctx)); } catch (e) { g = { verdict: 'confirm', reason: '' }; }
+  const changes = !(g && g.rule === 'read');
+  if (g && g.verdict === 'refuse') {
+    if (ctx.emit) safe(() => ctx.emit('command', { cmd: command, verdict: 'refuse', ok: false, rule: g.rule }));
+    return refused(ctx, { verdict: 'refuse', rule: g.rule, reason: g.reason });
+  }
+  if (changes && (ctx.commandCount || 0) >= 5) return 'REFUSED: that is more than five changing commands for one job, so I will stop here. Ask again if you still need it.';
+  if (g && g.verdict === 'confirm') {
+    // The card shows the plain-language explanation FIRST, then the exact command below it.
+    const ans = await ask(ctx, {
+      question: explain ? explain.replace(/[.!]?\s*$/, '.') + ' Shall I run it?' : 'Shall I run this on your computer?',
+      kind: 'confirm',
+      details: { title: 'A command for your computer', fields: [
+        ...(explain ? [{ label: 'What this does', value: explain }] : []),
+        { label: 'The exact command', value: clip(command, 2000) },
+      ] },
+    });
+    if (ans === null) return 'The card was closed, so I did not run it.';
+    if (ans !== 'yes') return ans === 'no' ? 'The person said no, so I did not run it.' : 'I did not run it. The person said: "' + ans + '"';
+  } else if (explain) {
+    await ctx.status({ state: 'running', label: explain });
+    await ctx.ui.say(explain); ctx.check();
+  }
+  if (changes) ctx.commandCount = (ctx.commandCount || 0) + 1;
+  ctx.status({ state: 'running', step: ctx.steps.length + 1, totalSteps: ctx.totalSteps, label: 'Running a command…' });
+  let out, ok = true;
+  try {
+    out = await ctx.support.ps(command, 60000);
+  } catch (e) { ok = false; out = String((e && e.message) || 'it did not work').split('\n')[0]; }
+  ctx.check();
+  if (ctx.emit) safe(() => ctx.emit('command', { cmd: command, verdict: changes ? 'confirm' : 'auto', ok, rule: g && g.rule }));
+  record(ctx, explain || ('Run: ' + clip(command, 120)), 'run_command', clip(command, 120));
+  const body = clip(String(out == null ? '' : out).trim() || '(no output)', CMD_OUT_MAX);
+  return (ok ? 'The command ran. Result:\n' : 'The command did not work: ') + body;
+}
+
+const EXEC = {
+  click, type_text: typeText, press_keys: pressKeys, scroll, open, wait, say: sayIt, ask_user: askUser,
+  guide_user: guideUser, confirm, remember, run_check: runCheck, apply_fix: applyFix,
+  set_plan: setPlan, update_settings: updateSettings, run_command: runCommand, done,
+};
+
+async function execute(call, ctx) {
+  const name = call && call.name;
+  const args = (call && call.args) || {};
+  const allowed = schemas(ctx.mode).some((t) => t.function.name === name);
+  if (!EXEC[name] || !allowed) return 'ERROR: the tool "' + name + '" is not available here.';
+  const positional = POSITIONAL.has(name) && (args.element_id != null || num(args.x));
+  if (!ACTS.has(name) || (positional && ctx.screenChanged)) ctx.saidYes = false; // a confirm-card yes is for the very next action only
+  if (positional && ctx.screenChanged) return 'SKIPPED: the screen may have changed after the last action. Look at the new screen first.';
+  const res = await EXEC[name](ctx, args);
+  if (CHANGES_SCREEN.has(name)) ctx.screenChanged = true;
+  return res;
+}
+
+module.exports = { schemas, execute, catalogOf, toPhysical, toImage, toImageRect, imageRectToPhysical, FINAL };

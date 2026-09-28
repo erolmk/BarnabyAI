@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Barnaby">
+  <title>Barnaby</title>
+  <!-- speech bubble -->
+  <rect x="16" y="20" width="224" height="180" rx="56" fill="#0B4A8B"/>
+  <polygon points="60,190 112,190 40,244" fill="#0B4A8B"/>
+  <!-- the letter B, drawn as shapes so every size matches build/icon.ico -->
+  <g fill="#FFFFFF">
+    <path d="M85 47H134A37 37 0 0 1 134 121H75V57A10 10 0 0 1 85 47Z"/>
+    <path d="M75 95H140A41 41 0 0 1 140 177H85A10 10 0 0 1 75 167Z"/>
+  </g>
+  <g fill="#0B4A8B">
+    <path d="M101 73H134A11 11 0 0 1 134 95H101Z"/>
+    <path d="M101 121H140A15 15 0 0 1 140 151H101Z"/>
+  </g>
+  <!-- spark of help -->
+  <circle cx="204" cy="56" r="17" fill="#FFB000"/>
+</svg>

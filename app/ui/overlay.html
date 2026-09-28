@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>Overlay</title>
+<link rel="stylesheet" href="shared.css">
+<link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+
+<!-- Teaching highlight (UX 11.4): spotlight dim, two-tone ring, arrow, label bubble -->
+<div id="hl" class="hl" hidden>
+  <div id="spot" class="spot"></div>
+  <div id="ring" class="ring"></div>
+  <svg id="arrow" class="arrow" viewBox="0 0 48 48" width="48" height="48" aria-hidden="true">
+    <path d="M24 3 44 23H31v22H17V23H4z" fill="#FFD000" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+  </svg>
+  <div id="bubble" class="bubble" role="status" aria-live="polite"></div>
+</div>
+
+<!-- Calm full-screen warning (UX 11.5) -->
+<section id="warning" class="warning" hidden>
+  <div class="card" role="alertdialog" aria-labelledby="wTitle" aria-describedby="wBody">
+    <div class="head">
+      <svg class="shield" viewBox="0 0 64 64" width="72" height="72" aria-hidden="true">
+        <path d="M32 4 8 13v17c0 15 10 26 24 30 14-4 24-15 24-30V13z" fill="currentColor"/>
+        <g id="markScam" class="mark"><path d="M32 18v17"/><path d="M32 45v.5"/></g>
+        <g id="markInfo" class="mark"><path d="M32 19v.5"/><path d="M32 29v17"/></g>
+      </svg>
+      <h1 id="wTitle" tabindex="-1"></h1>
+    </div>
+    <p id="wBody" class="body"></p>
+    <div id="wActions" class="actions"></div>
+    <p id="wTrust" class="trust" hidden></p>
+  </div>
+</section>
+
+<script src="demo-stub.js"></script>
+<script src="overlay.js"></script>
+</body>
+</html>

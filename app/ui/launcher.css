@@ -1,0 +1,147 @@
+/* Launcher (UX 11.1) + in-page Family and Lessons views + lesson print style (UX 10.5).
+   Also used by lessons.html. Needs shared.css first. */
+:root { --widget-reserve: 264px; } /* the always-on-top helper pill sits in the bottom-right corner */
+
+body.launcher { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---------- top: greeting, weather, clock, date ---------- */
+.top {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+  gap: var(--space-3); padding: 12px var(--space-4) 0;
+}
+.brand { width: calc(64px * var(--ui-scale)); height: calc(64px * var(--ui-scale)); display: block; }
+.hello h1 { overflow-wrap: anywhere; }
+.weather { margin: 4px 0 0; display: flex; align-items: center; gap: var(--space-1); }
+.weather .icon { width: 1.2em; height: 1.2em; color: var(--text-2); }
+.when { text-align: right; }
+/* the clock, Talk height, small row and trust line stop growing at 1.2x so big text still leaves room for the tiles */
+.clock { font: var(--fw-strong) calc(64px * min(var(--ui-scale), 1.15))/1.05 var(--font-display); font-variant-numeric: tabular-nums; }
+.date { font-size: var(--fs-h3); font-weight: var(--fw-strong); line-height: var(--lh-tight); }
+
+/* ---------- middle ---------- */
+.middle { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+main { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-1) var(--space-4); display: flex; flex-direction: column; }
+main:focus { outline: none; }
+#home-view { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+.view { flex: none; } /* grows with its content, so the More check sees the change */
+.tiles {
+  display: grid; gap: 20px; flex: 1; max-height: calc(660px * var(--ui-scale));
+  /* at most 3 columns; drops to 2 when the text is made bigger */
+  grid-template-columns: repeat(auto-fit, minmax(max(calc(340px * var(--ui-scale)), calc((100% - 40px) / 3)), 1fr));
+  grid-auto-rows: minmax(calc(112px * var(--ui-scale)), 1fr);
+}
+.tile {
+  justify-content: flex-start; gap: 20px; padding: 12px 20px;
+  border-radius: var(--radius-lg); text-align: left; background: var(--surface); height: 100%;
+}
+.tile-icon {
+  flex: none; display: grid; place-items: center; border-radius: 20px;
+  width: calc(68px * var(--ui-scale)); height: calc(68px * var(--ui-scale));
+  background: var(--primary-soft); color: var(--primary);
+}
+.tile-icon .icon { width: 72%; height: 72%; }
+.tile-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tile-label { font-size: var(--fs-h3); font-weight: var(--fw-strong); line-height: 1.15; text-wrap: balance; }
+.tile-hint { font-size: var(--fs-min); font-weight: var(--fw-body); color: var(--text-2); line-height: 1.3; }
+
+/* big screens: let the tile content grow into the space instead of floating in it */
+@media (min-width: 1500px) and (min-height: 900px) {
+  .tile { gap: 28px; padding: var(--space-2) 28px; }
+  .tile-icon { width: calc(88px * var(--ui-scale)); height: calc(88px * var(--ui-scale)); border-radius: 24px; }
+  .tile-label { font-size: var(--fs-h2); }
+}
+
+/* its own row under the tiles (never covers one); only there when the tiles do not all fit */
+.more { align-self: flex-start; margin: var(--space-1) var(--space-4) 0; flex: none; }
+
+/* ---------- bottom band: Talk + small row + trust line ---------- */
+.band {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3);
+  padding: var(--space-1) calc(var(--widget-reserve) + var(--space-1)) 12px var(--space-4);
+}
+.talk { --s: min(var(--ui-scale), 1.2); min-height: calc(112px * var(--s)); flex: 1 1 400px; max-width: 960px; gap: var(--space-3); padding: 0 var(--space-4);
+        border-radius: var(--radius-lg); }
+.talk-icon .icon { width: calc(56px * var(--s)); height: calc(56px * var(--s)); }
+.talk-words { display: flex; flex-direction: column; align-items: flex-start; text-align: left; }
+#talk-label { font-size: calc(32px * var(--s)); line-height: var(--lh-tight); white-space: nowrap; }
+#talk-sub { font-size: calc(20px * var(--s)); }
+#talk-sub { font-weight: var(--fw-body); }
+.talk.listening { background: var(--primary-strong); border-color: var(--text); box-shadow: 0 0 0 6px var(--primary-soft); }
+.small-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.small-btn { font-size: calc(20px * min(var(--ui-scale), 1.2)); min-height: calc(64px * min(var(--ui-scale), 1.2)); padding: 0 var(--space-2); gap: var(--space-1); }
+.small-btn .icon { width: 1.5em; height: 1.5em; color: var(--primary); }
+.small-btn:hover .icon { color: var(--primary-ink); }
+.trust { flex-basis: 100%; margin: 0; font-size: calc(20px * min(var(--ui-scale), 1.2)); display: flex; align-items: center; gap: var(--space-1); max-width: none; }
+.trust .icon { width: 1.4em; height: 1.4em; flex: none; color: var(--success); }
+
+/* ---------- in-page views ---------- */
+.view-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin: var(--space-1) 0 var(--space-2); }
+.back .icon { width: 1.1em; height: 1.1em; }
+.status-line { margin: 0 0 var(--space-3); }
+
+.people { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(460px * var(--ui-scale))), 1fr)); }
+.person { padding: var(--space-3); display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-2) var(--space-3); align-items: center; }
+.initials { width: calc(88px * var(--ui-scale)); height: calc(88px * var(--ui-scale)); border-radius: 50%;
+            display: grid; place-items: center; background: var(--primary-soft); color: var(--primary-ink);
+            font-size: var(--fs-h2); font-weight: var(--fw-strong); border: var(--border-w) solid var(--primary); }
+.person h3 { overflow-wrap: anywhere; }
+.person .relation { margin: 2px 0 0; color: var(--text-2); }
+.person-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.person-actions button { flex: 1 1 calc(200px * var(--ui-scale)); }
+
+/* lessons list */
+.lesson-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2);
+               grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(520px * var(--ui-scale))), 1fr)); }
+.lesson-list li { max-width: none; }
+.lesson-item { width: 100%; min-height: var(--target-primary); justify-content: flex-start; text-align: left;
+               padding: var(--space-2) var(--space-3); border-radius: var(--radius-lg); }
+.lesson-item .icon { width: calc(48px * var(--ui-scale)); height: calc(48px * var(--ui-scale)); color: var(--primary); }
+.lesson-item:hover .icon { color: var(--primary-ink); }
+.lesson-item span { display: flex; flex-direction: column; }
+.lesson-item small { font-weight: var(--fw-body); color: var(--text-2); }
+.show-more { margin-top: var(--space-3); }
+
+/* the lesson card */
+.lesson-card { max-width: 1040px; padding: var(--space-3) var(--space-4); }
+.lesson-meta { margin: 0; color: var(--text-2); }
+.needs { margin: var(--space-2) 0 0; }
+.steps { list-style: none; margin: var(--space-4) 0 0; padding: 0; display: grid; gap: var(--space-3); }
+.step { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-3); max-width: none;
+        padding-bottom: var(--space-3); border-bottom: var(--border-w) solid var(--primary-soft); }
+.step:last-child { border-bottom: 0; padding-bottom: 0; }
+.step-num { width: calc(56px * var(--ui-scale)); height: calc(56px * var(--ui-scale)); border-radius: 50%;
+            display: grid; place-items: center; background: var(--primary); color: var(--on-primary);
+            font-size: var(--fs-h3); font-weight: var(--fw-strong); }
+.step-text { margin: 0; font-size: var(--fs-body); max-width: 50ch; }
+.step-see { margin: 4px 0 0; color: var(--text-2); }
+.who { display: inline-flex; align-items: center; gap: var(--space-1); margin-top: var(--space-1);
+       font-size: var(--fs-min); color: var(--text-2); }
+.who .icon, .who img { width: 1.3em; height: 1.3em; }
+.who.you { color: var(--success); font-weight: var(--fw-strong); }
+.also { margin: var(--space-4) 0 0; }
+.tick, .print-footer, .print-title { display: none; }
+.lesson-actions, .confirm-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.lesson-actions button, .confirm-actions button { min-height: var(--target-primary); }
+.delete { color: var(--danger); }
+.delete:hover { background: var(--surface); color: var(--danger); border-color: var(--danger); } /* danger text on primary-soft is only 6.9:1 */
+.delete .icon { color: var(--danger); }
+.confirm-card { margin-top: var(--space-4); border-color: var(--danger); border-width: 3px; background: var(--surface); }
+.confirm-card h3 { font-size: var(--fs-h2); }
+.confirm-card h3:focus { outline: none; }
+.confirm-card p { margin: var(--space-2) 0 0; }
+
+/* ---------- printing a lesson: 20 pt, black on white, one step per block, tick boxes ---------- */
+@media print {
+  @page { margin: 16mm; }
+  html, body, body.launcher { background: #fff !important; color: #000 !important; height: auto; overflow: visible; display: block; }
+  .top, .band, .more, .view-bar, #home-view, #family-view, .lesson-list-wrap, .lesson-actions, .confirm-card, .status-line { display: none !important; }
+  main { overflow: visible; padding: 0; display: block; }
+  .lesson-card { border: 0; padding: 0; font-size: 20pt; line-height: 1.5; color: #000; max-width: none; }
+  .print-title { display: block; margin: 0 0 6pt; font-size: 28pt; font-weight: 600; line-height: 1.25; }
+  .lesson-meta, .step-see, .who, .who.you { color: #000; font-size: 16pt; }
+  .step-text { font-size: 20pt; max-width: none; }
+  .step { break-inside: avoid; grid-template-columns: auto auto minmax(0, 1fr); border-bottom: 1pt solid #000; }
+  .tick { display: block; width: 22pt; height: 22pt; border: 2pt solid #000; margin-top: 6pt; }
+  .step-num { background: #fff; color: #000; border: 2pt solid #000; }
+  .print-footer { display: block; margin-top: 24pt; font-size: 16pt; }
+}
