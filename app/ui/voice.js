@@ -240,8 +240,15 @@
       }
     } finally {
       if (my === gen) stopNow = null;
-      if (!stopNow && actx && actx.state === 'running') actx.suspend().catch(() => {}); // no open sound device while quiet
+      idle();
     }
+  }
+  // No open sound device while quiet, but not right after a line: the next line would resume a cold device, and
+  // Windows (Bluetooth and USB outputs most) drops the first 50-300 ms after a resume, clipping the first syllable.
+  let idleT = null;
+  function idle() {
+    clearTimeout(idleT);
+    idleT = setTimeout(() => { if (!stopNow && actx && actx.state === 'running') actx.suspend().catch(() => {}); }, 15000);
   }
 
   async function pcm(c, my) {
@@ -261,8 +268,39 @@
       function end() { clearTimeout(guard); if (node === src) node = null; res(); }
       src.onended = end;
       node = src;
-      src.start();
+      src.start(actx.currentTime + 0.03); // a moment for a just-resumed device, so the first syllable is heard
     });
+  }
+
+  // Short, quiet tones (02_ux 2.4: 300 ms or less, below 800 Hz, well under speech): 'open' = the microphone is on,
+  // 'heard' = got it, now writing it down. Never in the browser demo; muted (HELPER_MUTE=1 too) the widget skips them.
+  function earcon(kind) {
+    if (demo()) return;
+    try {
+      if (!actx) actx = new AudioContext();
+      actx.resume().catch(() => {});
+      const t0 = actx.currentTime + 0.02;
+      (kind === 'heard' ? [392, 523] : [440]).forEach((f, i) => {
+        const t = t0 + i * 0.12, o = actx.createOscillator(), g = actx.createGain();
+        o.frequency.value = f;
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(0.06, t + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+        o.connect(g).connect(actx.destination);
+        o.start(t); o.stop(t + 0.12);
+      });
+      idle();
+    } catch (_) {}
+  }
+
+  // Open the microphone by itself once a question has been said (the owner: "it automatically turns on microphone
+  // when it asks us a question"). Only a choice or a typed answer: a confirm card needs a real click (R19) and a
+  // 'done' step has the person busy on the screen. Never while muted (no voice, and no surprise microphone), never
+  // twice, never after the question was cut short (Stop, Talk, an answer, Say it again: c.gen moved on).
+  function autoListen(ask, c) {
+    c = c || {};
+    return !!ask && (ask.kind === 'choice' || ask.kind === 'text') && !ask.noAutoMic && !c.muted && !c.listening && !c.talking && !c.demo &&
+      c.gen === c.genNow && c.enabled !== false;
   }
 
   // "Say it again" (UX 9.5): the last natural line once more, with no network call and a little slower (longer
@@ -306,5 +344,5 @@
     return true;
   }
 
-  window.Voice = { listen, finish, cancel, speak, play, replay, stopSpeaking, voices, _selfTest: selfTest };
+  window.Voice = { listen, finish, cancel, speak, play, replay, stopSpeaking, voices, earcon, autoListen, _selfTest: selfTest, _makeVad: makeVad };
 })();

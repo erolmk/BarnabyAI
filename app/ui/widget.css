@@ -105,8 +105,15 @@ body.compact .bottom button, body.compact .small-btn { font-size: min(var(--fs-b
   border-radius: var(--radius); padding: var(--space-2); overflow-wrap: anywhere; }
 .prev { font-size: var(--fs-body); color: var(--text-2); margin-bottom: var(--space-1); }
 .cur { font-size: var(--fs-caption); font-weight: var(--fw-strong); line-height: 1.35; white-space: pre-wrap; }
-.you-said { background: var(--primary-soft); color: var(--primary-ink); border-radius: var(--radius);
-  padding: var(--space-1) var(--space-2); font-size: var(--fs-body); overflow-wrap: anywhere; }
+/* what the person said: a bubble of its own on the right (Barnaby's caption is the amber box on the left), a bold
+   "You said" label, then his words upright and big, with no quotes */
+.you-said { align-self: flex-end; max-width: 92%; box-sizing: border-box; background: var(--surface); color: var(--text);
+  border: 3px solid var(--primary); border-radius: var(--radius) var(--radius) 6px var(--radius);
+  padding: 12px var(--space-2); overflow-wrap: anywhere; }
+.you-how { display: flex; align-items: center; gap: 8px; font-size: var(--fs-min); font-weight: var(--fw-strong);
+  color: var(--primary-ink); }
+.you-text { font-size: var(--fs-caption); line-height: 1.35; font-style: normal; white-space: pre-wrap; }
+.you-said.pending .you-text { color: var(--text-2); }
 
 /* answers: stacked big buttons, text answer, or the confirm card */
 .answers { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -133,6 +140,17 @@ body.compact .bottom button, body.compact .small-btn { font-size: min(var(--fs-b
 .more-btn { width: 100%; min-height: 64px; }
 .more-btn.up .ico { transform: rotate(180deg); }
 
+/* "Please wait": big dots that rise in turn. Each dot changes once per 1.6 s (no flashing, WCAG 2.3.1); livelier than
+   UX 2.4's calm pulse because the owner asked for an animated sign; still under reduced motion (shared.css). */
+.think-big { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--space-2); margin-top: 6px;
+  font-size: var(--fs-h3); font-weight: var(--fw-strong); line-height: var(--lh-tight); }
+.think-big .dots { flex: none; display: flex; gap: 14px; padding-top: 8px; }
+.think-big i { width: 34px; height: 34px; border-radius: 50%; background: var(--primary);
+  animation: think-dot 1.6s ease-in-out infinite; }
+.think-big i:nth-child(2) { animation-delay: .27s; }
+.think-big i:nth-child(3) { animation-delay: .53s; }
+@keyframes think-dot { 0%, 100% { opacity: .35; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-8px); } }
+
 .listen-row { background: var(--primary-soft); color: var(--primary-ink); border-radius: var(--radius);
   padding: var(--space-1) var(--space-2) var(--space-2); }
 .listen-row p { font-size: var(--fs-body); font-weight: var(--fw-strong); margin-bottom: var(--space-1); }
@@ -146,10 +164,23 @@ body.compact .bottom button, body.compact .small-btn { font-size: min(var(--fs-b
 button.talk { width: 100%; min-height: 88px; font-size: var(--fs-h3); gap: var(--space-2); }
 button.talk.listening { box-shadow: 0 0 0 5px var(--primary-soft), 0 0 0 7px var(--primary); }
 
+/* speaking speed: Slower / Normal / Faster, the chosen one filled */
+.speed-row { display: grid; grid-template-columns: auto 1fr 1fr 1fr; gap: var(--space-1); align-items: center; }
+.speed-row span { font-size: var(--fs-min); font-weight: var(--fw-strong); }
+.speed-row button { min-height: 64px; padding: 4px; white-space: normal; }
+.speed-row button[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+/* the question gets the room (UX 6.1), and the 760 px floating panel gives it to the words (Settings and "talk slower"
+   remain). Big text keeps the row, without its label: they are the people most likely to want slower speech. */
+body.asking .speed-row, body:not(.docked) .speed-row { display: none; }
+body.compact .speed-row { grid-template-columns: 1fr 1fr 1fr; }
+body.compact .speed-row span { display: none; }
+
 .bottom { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
 .bottom button { min-height: 64px; padding: 4px var(--space-1); white-space: normal; }
 
 @media (forced-colors: active) {
-  .pill, .panel, .captions, .fields, .meter, .status-card, .plan li.now { border: 2px solid CanvasText; }
+  .pill, .panel, .captions, .fields, .meter, .status-card, .plan li.now, .you-said { border: 2px solid CanvasText; }
+  .think-big i { background: CanvasText; }
+  .speed-row button[aria-pressed="true"] { border: 4px solid Highlight; }
   .meter-fill { background: Highlight; }
 }

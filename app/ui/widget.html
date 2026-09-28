@@ -35,6 +35,8 @@
       <p id="stKicker" class="st-kicker" hidden></p>
       <p id="status" class="st-title" role="status" aria-live="polite">Ready when you are</p>
       <p id="stDetail" class="st-detail" hidden></p>
+      <!-- the big "please wait" sign while he works, in the card that is always in view (#status announces it) -->
+      <p id="thinkBig" class="think-big" aria-hidden="true" hidden><span class="dots"><i></i><i></i><i></i></span><span>Please wait…</span></p>
     </div>
   </section>
   <p id="eye" class="eye" hidden>
@@ -44,11 +46,18 @@
 
   <div id="middle" class="middle">
     <ol id="plan" class="plan" aria-label="The steps" hidden></ol>
+    <section id="youBefore" class="you-said" aria-label="What you said" hidden>
+      <p class="you-how"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span></span></p>
+      <p class="you-text"></p>
+    </section>
     <section class="captions" aria-label="What the helper said">
       <p id="prevLine" class="prev" hidden></p>
       <p id="curLine" class="cur" aria-live="polite"></p>
     </section>
-    <p id="youSaid" class="you-said" hidden></p>
+    <section id="youSaid" class="you-said" aria-label="What you said" hidden>
+      <p class="you-how"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span></span></p>
+      <p class="you-text" aria-live="polite"></p>
+    </section>
     <section id="answers" class="answers" hidden></section>
     <div id="typeBox" class="type-box">
       <label for="typeInput">Type instead</label>
@@ -78,6 +87,13 @@
     <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7"/></svg>
     <span id="talkLabel">Talk</span>
   </button>
+
+  <div id="speedRow" class="speed-row" role="group" aria-labelledby="speedLabel">
+    <span id="speedLabel">Speed</span>
+    <button type="button" aria-pressed="false">Slower</button>
+    <button type="button" aria-pressed="true">Normal</button>
+    <button type="button" aria-pressed="false">Faster</button>
+  </div>
 
   <nav class="bottom" aria-label="Always here">
     <button id="againBtn" type="button">

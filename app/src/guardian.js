@@ -75,8 +75,18 @@ const PRESS = /\b(?:enter|return|space)\b/;
 const TAB_THEN_PRESS = /\btab\b.*\b(?:enter|return|space)\b/; // Gmail: Tab from the message lands on Send
 const CHAT_WIN = /\b(?:whatsapp|messenger|teams|skype|signal|telegram|discord|messages|imessage|chat)\b/; // Enter sends here
 const MAIL_WIN = /\b(?:gmail|outlook|mail|inbox|yahoo|aol)\b/;
+// The person's own mail program (window title + process), for the Send exception: not any page with "mail" in its title.
+const MAIL_APP = /(?:- gmail|mail - [^-]*- outlook|outlook\.com|yahoo mail|aol mail)\b|\b(?:outlook|olk|hxoutlook)(?:\.exe)?$/;
 const MESSAGE_BOX = /\b(?:message|body|reply|comment|compose|write)\b/; // a message draft, not an address bar
 // Protective keys are always allowed (04_safety 5.x): leave full screen, close the tab.
+// The person's own request told the helper to press Send itself ("...and just send it"). Anything else keeps the review
+// card and the person's own click. "and send it" alone is the task, not a waiver, so it does not count.
+// Polite wording ("please send ...", "you can send them ...") is the task, and "without asking" is about questions
+// unless it follows "send" closely ("send it to Anne without asking me").
+const SEND_ASKED = /\b(?:(?:just|go ahead and)\s+send\s+(?:it|that|this|them|the (?:email|e-?mail|message|note|mail))\b|send (?:it|that|this) (?:off|now|right away|straight away|yourself)\b|send\b(?:\s+\S+){0,4}?\s+without (?:asking|checking|showing))/;
+const NOT_SEND = /\b(?:don'?t|dont|do not|never|not)\s+(?:just\s+)?send\b|\bbefore (?:you |it )?send|\b(?:after|once|when) (?:i|we) (?:read|check|see|look)|\blet me (?:check|see|read|look|review)/;
+const SEND_BUTTON = /^send(?: now| email| e-mail| message)?(?:\s*\([^)]*\))?$/; // Gmail: "Send (Ctrl-Enter)"
+function sendAsked(goal) { const t = norm(goal); return SEND_ASKED.test(t) && !NOT_SEND.test(t); }
 const PROTECTIVE = /^(?:esc|escape|f11|(?:ctrl|control)\s*\+\s*(?:w|f4))(?:\s+(?:esc|escape|f11|(?:ctrl|control)\s*\+\s*(?:w|f4)))*$/;
 const BAD_SCHEME = /^(?:javascript|vbscript|data|file|search-ms|ms-quick-assist|ms-msdt|ms-officecmd|shell):/;
 // A command line typed anywhere (Explorer's address bar and the Start box run them too).
@@ -247,7 +257,11 @@ function segmentOk(seg) {
   return args.every((a) => a[0] !== '-' || paramOk(a, cmd));
 }
 function isReadOnlyCommand(raw) {
-  const s = String(raw || '').trim();
+  // Classification only: the (x86) folder variable and a one-comparison Where-Object block are the same reads as their
+  // plain forms (the shapes models write for "is Zoom installed?"). The raw command is what runs; every check below
+  // still sees any $( ), ; or second statement inside them.
+  const s = String(raw || '').trim().replace(/\$\{env:programfiles\(x86\)\}/gi, '$env:programfiles')
+    .replace(/(\bwhere(?:-object)?\s+)\{\s*\$_\.([a-z_]\w*)\s+(-[a-z]+)\s+('[^']*'|"[^"]*"|[\w.*:\\/+,-]+)\s*\}/gi, '$1$2 $3 $4');
   if (!s || CMD_BANNED.test(s) || CMD_DOLLAR.test(s) || CMD_SECRET_DRIVE.test(s)) return false;
   return s.split('|').every(segmentOk);
 }
@@ -359,16 +373,34 @@ class Guardian {
     return this.rx.phone ? t.replace(this.rx.phone, (m) => (this.knownNumber(digits(m)) ? m : '[number hidden]')) : t;
   }
 
+  // T6: only contacts the family entered in Settings are trusted. One saved by voice (added: 'voice') never loosens
+  // the money (R5), dialling (R6) or number-hiding rules: a scammer on the phone could have dictated it.
   knownPerson(text) {
     const c = this.config.get() || {};
-    const names = [...(c.contacts || []).map((x) => x && x.name), c.family && c.family.name].filter((n) => n && n.trim().length > 1);
+    const names = [...trusted(c).map((x) => x.name), c.family && c.family.name].filter((n) => n && n.trim().length > 1);
     return matcher(names)(norm(text)).length > 0;
   }
 
   knownNumber(d) {
     const c = this.config.get() || {};
-    const mine = [...(c.contacts || []).map((x) => x && x.phone), c.family && c.family.phone].map(digits);
+    const mine = [...trusted(c).map((x) => x.phone), c.family && c.family.phone].map(digits);
     return d.length >= 7 && [...mine, ...this.officialNumbers].includes(d);
+  }
+
+  // The Send exception's window: the person's mail program, and the configured provider when there is one.
+  ownMail(where) {
+    const p = String(((this.config.get() || {}).email || {}).provider || '').split('-')[0];
+    return MAIL_APP.test(where) && (!p || where.includes(p));
+  }
+
+  // An address typed this task is safe to send to without the card only when the person said it or the family
+  // entered it (a Settings contact, the family helper, their own address). One read off the screen is not.
+  // ponytail: typed or opened addresses only; a recipient picked from the mail program's own suggestions is not seen.
+  addressKnown(addr, heard) {
+    const c = this.config.get() || {};
+    const a = norm(addr);
+    const mine = [...trusted(c).map((x) => x.email), c.family && c.family.email, c.email && c.email.address].map(norm);
+    return mine.includes(a) || fromPerson(a, heard);
   }
 
   // -> null | {verdict:'refuse'|'confirm', reason, rule, redirect?}
@@ -435,6 +467,11 @@ class Guardian {
     if (url && EXECUTABLE.test(url)) return TRUSTED_INSTALL.test(url) ? confirm('R11', MSG.downloadKnown) : refuse('R11', MSG.download);
 
     if (clicking && (IRREVERSIBLE.test(elName) || IRREVERSIBLE.test(explain))) return refuse('R14', MSG.irreversible, { redirect: 'guide_user' });
+    // The one exception to "the person presses Send": an email's own Send button, when their original request (never an
+    // answer or the screen) said to send it, outside a scam episode and outside teach mode. R16 already refused above.
+    if (clicking && context.mode !== 'teach' && !context.scamContext && sendAsked(context.goal) && this.ownMail(where)
+      && (context.typedAddrs || []).every((x) => this.addressKnown(x, context.heard))
+      && SEND_BUTTON.test(elName.replace(/[‪-‮]/g, '').replace(/\s+/g, ' ').trim())) return { verdict: 'auto', rule: 'sendAsked', reason: '' };
     if (clicking && (FINAL_NAME.test(elName) || FINAL_IN_EXPLAIN.test(explain))) return refuse('final', MSG.final, { redirect: 'guide_user' });
     if (tool === 'press_keys') { // keys that send: the person presses Send themselves
       const k = norm(a.keys || a.combo);
@@ -493,13 +530,14 @@ class Guardian {
       window: win.title ? String(win.title).slice(0, 150) + (win.process ? ' (' + win.process + ')' : '') : '',
       scam_context: !!context.scamContext,
     };
-    let verdict, confidence, reason;
+    let verdict, confidence, reason, jevChoice = '';
     try {
       const r = await this.jev.ask(state, {
         verdict: { type: 'choice', instructions: GATE_INSTRUCTIONS, criteria: GATE_CRITERIA },
         risky: { type: 'noul', instructions: 'Does this action send, buy, delete, post, or change settings?' },
       }, this.jevOpts());
       const v = r.answers.verdict;
+      jevChoice = v.choice;
       verdict = RANK[v.choice] === undefined ? 'confirm' : v.choice;
       confidence = v.confidence;
       if (verdict === 'refuse' && confidence < 0.6) verdict = 'confirm';
@@ -511,6 +549,12 @@ class Guardian {
       verdict = RISKY_WORDS.test(blob) ? 'confirm' : 'auto';
       confidence = 0;
       reason = verdict === 'confirm' ? MSG.jevConfirm : '';
+    }
+    // Send the person told us to press: the "sends" noul must not bring back the card they waived. Jev can still refuse;
+    // Jev down, or a doubtful refuse, falls back to the card.
+    if (hard && hard.rule === 'sendAsked') {
+      if (verdict === 'refuse') return { verdict, reason, confidence };
+      return confidence === 0 || jevChoice === 'refuse' ? { verdict: 'confirm', reason: MSG.jevConfirm, confidence } : { verdict: 'auto', reason: '', confidence };
     }
     if (verdict === 'auto' && context.scamContext) { verdict = 'confirm'; reason = MSG.jevConfirm; }
     const out = { verdict, reason, confidence };
@@ -587,6 +631,7 @@ class Guardian {
   }
 }
 
+const trusted = (c) => (Array.isArray(c.contacts) ? c.contacts : []).filter((x) => x && !x.added);
 function isCard(m) { const d = m.replace(/\D/g, ''); return d.length >= 13 && d.length <= 19 && luhn(d); }
 
 // A yes on the helper's own confirm card only softens a model "confirm": never a rule's confirm
@@ -599,14 +644,16 @@ function finish(r, confidence, context) {
 
 // R18: is this fact the person's own words? Numbers and addresses verbatim; otherwise >= 60% word overlap
 // with what they said this task (for "Label: value" the value is checked).
-// ponytail: plain word overlap; a spoken "anne at example dot com" does not match the typed address.
+// A spoken address ("anne at example dot com") counts as the typed one.
+// ponytail: plain word overlap; a spoken local part with a space ("anne marie at ...") still does not match.
 const STOP = new Set('the a an is are was of to from and my her his their at in on for with it this that be'.split(' '));
 function words(s) {
   return norm(s).replace(/(\d)[\s().-]+(?=\d)/g, '$1').split(/[^a-z0-9@._+'-]+/)
     .map((w) => w.replace(/^[._'+-]+|[._'+-]+$/g, '')).filter((w) => w.length > 1 && !STOP.has(w));
 }
 function fromPerson(fact, heard) {
-  const said = new Set(words((Array.isArray(heard) ? heard : []).join(' ')));
+  const raw = (Array.isArray(heard) ? heard : []).join(' ');
+  const said = new Set([...words(raw), ...words(raw.replace(/(\S+)\s+at\s+(\S+)\s+dot\s+(\S+)/gi, '$1@$2.$3'))]);
   const all = words(fact);
   if (all.some((w) => /[\d@]/.test(w) && !said.has(w))) return false;
   const m = /^([^:]{1,60}):(.*)$/.exec(String(fact));
@@ -705,4 +752,4 @@ const KIND_CRITERIA = {
   not_scam: 'Ordinary, legitimate screen with no trick',
 };
 
-module.exports = { Guardian, norm, noVouch, WARN, MSG };
+module.exports = { Guardian, norm, noVouch, sendAsked, WARN, MSG };

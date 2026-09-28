@@ -53,15 +53,15 @@ It fixes "my computer is slow" with read-only diagnostics, and guards against sc
 | Launcher | `ui/launcher.*` | 9 big tiles, clock and weather, "Talk to Barnaby" (F9), lessons, family |
 | Widget | `ui/widget.*`, `ui/voice.js` | "Help" pill, captions, one question at a time, confirm cards, push-to-talk |
 | Overlay | `ui/overlay.*` | yellow and black teaching ring with a label, and the calm full-screen scam card |
-| Brain | `src/agent.js`, `src/tools.js` | looks (screenshot + UI Automation list), thinks (OpenRouter `google/gemini-3.8-flash`), acts, and explains before every step |
+| Brain | `src/agent.js`, `src/tools.js` | looks (screenshot + UI Automation list), thinks (OpenRouter `deepseek/deepseek-v4.1-flash`), acts in Auto mode by default, asks only what it cannot find out, and explains each step in a short line |
 | Guardian | `src/guardian.js`, `src/router.js` | **TypeSafe Jev** (`~typesafe/jev-latest`) routes intents, gates each action (auto / confirm / refuse) and detects scam screens, on top of hard rules that no model can override |
 | Scam Shield | `main.js` | watches the window in front; runs Jev only when the keyword prefilter hits |
 | Support | `src/support.js` | 9 read-only PowerShell checks and 8 whitelisted fixes, each only after a yes |
 | Native | `native/Helper.cs` → `helper.exe` | UI Automation, SendInput, DPI-aware screenshots with password and card fields blacked out, a low-level click watcher, and offline System.Speech. C# 5, built by the Framework csc |
-| Voice | `ui/voice.js` + `llm.transcribe` | microphone with voice detection, 16 kHz WAV sent to `google/gemini-3.1-flash-lite` for speech-to-text; Windows voices for speech |
+| Voice | `ui/voice.js` + `llm.transcribe` | microphone with voice detection, 16 kHz WAV sent to `google/gemini-3.1-flash-lite` for speech-to-text; MAI-Voice-2 (`src/tts.js`, style "happy") for speech, the Windows voice as fallback; the mic opens by itself after a question; Slower / Normal / Faster buttons |
 
 Promises the code keeps (hard rules):
-- The person presses Send, Pay or Delete themselves.
+- The person presses Send, Pay or Delete themselves. The one exception: an email's Send when the request itself said "just send it".
 - The person types their own passwords and card numbers.
 - Remote-access tools, gift cards, crypto and wires are refused.
 - Family alerts need consent and carry only the kind of warning and the time.
@@ -79,7 +79,7 @@ This runs without a console window and loads `OPENROUTER_API_KEY` from the centr
 installed app, a family member enters the key in the setup wizard ("Barnaby connection key").
 
 ## Tests
-- `node --test test/*.test.js`: 80 unit and integration tests (5 live ones need `LIVE=1`).
+- `node --test test/*.test.js`: unit and integration tests (the live ones are skipped unless `LIVE=1`).
 - `LIVE=1 node --test test/live_jev.test.js`: live Jev checks: router 64/64, scam screens 34/34 with no false alarms, gates 52/53.
 - `HELPER_MUTE=1 HELPER_USER_DATA=<dir> node_modules/electron/dist/electron.exe . --smoke`: hidden-window smoke test of every window.
 - `node_modules/electron/dist/electron.exe test/sim/run-sim.js --scenario anne-marie`: the real agent, LLM and Jev on

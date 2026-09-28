@@ -59,13 +59,16 @@ function shieldChange(before, patch, now) {
 const shieldOn = (s, now) => !!(s && s.scamShield) || (+(s && s.scamShieldOffAt) || 0) > now;
 
 // Family contact and alert changes that weaken protection wait a day too: changing or clearing the family
-// name, phone or alert code, or "Just me" after "Tell <family>". A first value, "Tell <family>", or changing
+// name, phone, email or alert code, or "Just me" after "Tell <family>". A first value, "Tell <family>", or changing
 // a field back (which cancels its wait) is immediate. -> {family to save now, pendingFamily, added}
-const LOCKED = ['name', 'phone', 'ntfyTopic', 'alertConsent'];
+const LOCKED = ['name', 'phone', 'email', 'ntfyTopic', 'alertConsent'];
 const str = (v) => String(v == null ? '' : v).trim();
 function familyLock(before, patch, now) {
   const f = patch && patch.family;
   if (!f || typeof f !== 'object') return null;
+  // First-run setup: nothing to protect yet, so picking person A then B applies at once. `=== false`, not
+  // !setupDone: DEFAULTS always holds a boolean, so a settings object without it keeps the lock (fail closed).
+  if (before && before.setupDone === false) return { family: { ...f }, pendingFamily: [], added: [] };
   const was = (before && before.family) || {}, old = (before && before.pendingFamily) || [];
   const family = { ...f }, added = [];
   const pendingFamily = old.filter((x) => !(x.field in family)); // fields not in this patch keep waiting

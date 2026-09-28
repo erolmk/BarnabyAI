@@ -39,8 +39,8 @@
       '<input id="' + id + '" data-path="' + path + '" type="' + (opts.type || 'text') + '" value="' + esc(v == null ? '' : v) + '"' +
       (opts.hint ? ' aria-describedby="' + id + '-h"' : '') + (opts.attrs || '') + '></div>';
   }
-  function choices(path, list, cls) { // list: [value, label, hint?]
-    const cur = get(draft, path);
+  function choices(path, list, cls, pressed) { // list: [value, label, hint?]; pressed: show this one as chosen instead
+    const cur = pressed === undefined ? get(draft, path) : pressed;
     return '<div class="choices ' + (cls || '') + '">' + list.map((c) =>
       '<button type="button" class="choice" data-path="' + path + '" data-value="' + esc(JSON.stringify(c[0])) + '" aria-pressed="' + (cur === c[0]) + '">' +
         '<span class="choice-text"><span class="choice-label">' + c[1] + '</span>' + (c[2] ? '<small>' + c[2] + '</small>' : '') + '</span>' +
@@ -48,6 +48,16 @@
   }
   const famName = () => String((draft.family && draft.family.name) || '').trim();
   const famSpan = () => '<span data-fam-name>' + (esc(famName()) || 'my family') + '</span>';
+  // The family helper: one of their people above (copies the name, phone and email) or someone typed below.
+  function helperPicker() {
+    const people = (draft.contacts || []).map((c, i) => [c, i]).filter((x) => String(x[0].name || '').trim());
+    if (!people.length) return '';
+    return '<h3>Pick one of their people</h3><div class="choices two-col">' + people.map(([c, i]) =>
+      '<button type="button" class="choice" data-pick-helper="' + i + '" aria-pressed="' + (famName() === String(c.name).trim()) + '">' +
+        '<span class="choice-text"><span class="choice-label">' + esc(c.name) + '</span>' +
+        (c.relation || c.phone || c.email ? '<small>' + esc(c.relation || c.phone || c.email) + '</small>' : '') + '</span>' +
+        '<span class="chosen">' + icon('check') + 'Chosen</span></button>').join('') + '</div><p class="hint">Or type someone else below.</p>';
+  }
 
   // ---------- voices (deeper by default: UX 9.1, 03_naming) ----------
   const DEEP = /\b(male|david|mark|george|james|guy|ryan|christopher|eric|roger|steffan|andrew|brian|davis|tony|jason|liam|william|thomas|daniel|richard|sean|connor|mitchell|ravi|prabhat|kenneth|brandon|jacob|fred|ralph|albert|bruce|reed|eddy|rocko|grandpa)\b/i;
@@ -70,6 +80,9 @@
   const LOCAL = 'local';
   const NATURAL = [['en-US-Ethan:MAI-Voice-2', 'Ethan', 'Recommended. A calm, low voice.'], ['en-US-Grant:MAI-Voice-2', 'Grant', 'A man’s voice'],
     ['en-US-Jasper:MAI-Voice-2', 'Jasper', 'A man’s voice'], ['en-US-Harper:MAI-Voice-2', 'Harper', 'A softer voice, a woman’s']];
+  // Speaking speed: Slower, Normal, Faster. The widget's speed buttons use the same three (test/setup.test.js checks).
+  const SPEEDS = [0.8, 0.9, 1.0];
+  const speedIdx = (r) => { r = +r || 0.9; return r < 0.85 ? 0 : r > 0.95 ? 2 : 1; }; // a rate set by voice (0.7, 1.1) shows as its nearest step
   const VOICE_CHOICES = NATURAL.concat([[LOCAL, 'This computer’s own voice', 'Works without the internet. Nothing leaves the computer.']]);
   const voiceTitle = (d) => (d.muted ? 'Only shows the words' : d.ttsVoice === LOCAL
     ? 'This computer’s own voice' + (d.voiceName ? ': ' + voiceLabel({ name: d.voiceName }) : '')
@@ -186,7 +199,7 @@
             '<button type="button" data-voice-pick="deeper">A deeper voice</button><button type="button" data-voice-pick="higher">A higher voice</button></div>' +
             choices('voiceName', [['', 'Automatic', 'A deeper voice, picked by ' + NAME]].concat(list.map((v) => [v.name, esc(voiceLabel(v)), [accent(v), pitch(v)].filter(Boolean).join(' · ')])), 'two-col') +
             (list.length ? '' : '<p class="hint">The voices on this computer will show here once Windows has loaded them.</p>') : '') +
-          '<h3>How fast?</h3>' + choices('speechRate', [[0.8, 'Slower'], [0.9, 'Normal', 'Recommended'], [1.0, 'A bit faster']], 'three') +
+          '<h3>How fast?</h3>' + choices('speechRate', [[SPEEDS[0], 'Slower'], [SPEEDS[1], 'Normal', 'Recommended'], [SPEEDS[2], 'Faster']], 'three', SPEEDS[speedIdx(draft.speechRate)]) +
           '<div class="row"><button type="button" id="test-voice">' + icon('speaker') + '<span>Test the voice</span></button></div>' +
           '<p id="voice-note" class="hint" role="status"></p>';
       } },
@@ -208,11 +221,13 @@
       body: () => choices('video.provider', [['zoom', 'Zoom'], ['whatsapp', 'WhatsApp'], ['facebook', 'Facebook Messenger'],
         ['teams', 'Microsoft Teams'], ['', 'Not sure', NAME + ' will ask them']], 'two-col') },
 
-    { id: 'contacts', icon: 'family', title: 'Family and friends',
-      intro: 'These people appear under Family on the home screen, with "Send an email" and "Video call" buttons.',
+    { id: 'contacts', icon: 'family', title: 'Contacts: family and friends',
+      intro: NAME + ' knows these people by name. They can say \u201cemail Sarah\u201d or \u201ccall Anne Marie\u201d, and he uses the details here. ' +
+        'They also appear under Family on the home screen, with "Send an email" and "Video call" buttons.',
       body: () => (removed ? '<p class="notice undo">Removed ' + esc(removed.c.name || 'a person') + '. <button type="button" data-undo-remove>' + icon('back') +
           '<span>Put ' + esc(removed.c.name || 'them') + ' back</span></button></p>' : '') + (draft.contacts || []).map((c, i) =>
-        '<fieldset class="contact"><legend>Person ' + (i + 1) + (c.name ? ': ' + esc(c.name) : '') + '</legend><div class="grid2">' +
+        '<fieldset class="contact"><legend>Person ' + (i + 1) + (c.name ? ': ' + esc(c.name) : '') + '</legend>' +
+          (c.added ? '<p class="hint">' + esc(NAME) + ' saved this person from what they told him. Please check the details.</p>' : '') + '<div class="grid2">' +
           field('Name', 'contacts.' + i + '.name', { attrs: ' autocomplete="off"' }) +
           field('How they are related', 'contacts.' + i + '.relation', { attrs: ' placeholder="Daughter, friend, neighbour" autocomplete="off"' }) +
           field('Email address', 'contacts.' + i + '.email', { type: 'email', attrs: ' autocomplete="off"' }) +
@@ -220,12 +235,14 @@
         '</div><button type="button" class="remove" data-remove="' + i + '">' + icon('trash') + '<span>Remove ' + esc(c.name || 'this person') + '</span></button></fieldset>').join('') +
         '<button type="button" data-add-contact>' + icon('plus') + '<span>Add a person</span></button>' },
 
-    { id: 'family', icon: 'bell', title: 'Family contact and alerts',
-      intro: 'If ' + NAME + ' sees a scam on the screen, he warns them calmly. He can also send you an alert, if they agree.',
+    { id: 'family', icon: 'bell', title: 'Family helper and alerts',
+      intro: 'Pick the one person who looks out for them, usually the family member setting this up. If ' + NAME +
+        ' sees a scam on the screen, he warns them calmly. He can also alert this person, if they agree.',
       body: () =>
-        '<p id="family-note" class="notice" role="status"' + (familyNote() ? '' : ' hidden') + '>' + esc(familyNote()) + '</p>' +
-        field('Your name', 'family.name', { hint: NAME + ' uses it when they ask to call family.', attrs: ' autocomplete="off"' }) +
-        field('Your phone number', 'family.phone', { type: 'tel', hint: NAME + ' reads it out if they ask. He never phones anyone.', attrs: ' autocomplete="off"' }) +
+        '<p id="family-note" class="notice" role="status"' + (familyNote() ? '' : ' hidden') + '>' + esc(familyNote()) + '</p>' + helperPicker() +
+        field('Family helper\u2019s name', 'family.name', { hint: NAME + ' uses it when they ask for family.', attrs: ' autocomplete="off"' }) +
+        field('Family helper\u2019s phone number', 'family.phone', { type: 'tel', hint: NAME + ' reads it out if they ask. He never phones anyone.', attrs: ' autocomplete="off"' }) +
+        field('Family helper\u2019s email (optional)', 'family.email', { type: 'email', attrs: ' autocomplete="off"' }) +
         '<h3>Ask them first</h3><p>Read this to them and let them choose. If ' + esc(NAME) + ' sees a scam, who should hear about it?</p>' +
         choices('family.alertConsent', [['just_me', 'Just me', 'Nothing goes to anyone.'],
           ['tell_family', 'Tell ' + famSpan() + ' if I might be in a scam', 'Only the kind of warning and the time. Never the screen, websites or amounts.']]) +
@@ -262,10 +279,11 @@
         choices('wakeWord', [[true, 'On'], [false, 'Off']], 'three') },
 
     { id: 'mode', icon: 'talk', title: 'How ' + NAME + ' helps',
-      intro: 'How much should ' + NAME + ' do at first? They can always say "show me how" or "do it for me".',
-      body: () => choices('mode', [['together', 'Do it together', 'We suggest this. ' + NAME + ' does the routine clicks; they do the personal steps.'],
-        ['teach', 'Show me how', 'They do every click, and ' + NAME + ' points.'],
-        ['do', 'Do it for me', NAME + ' does the clicks, but never the final Send, Buy or Delete.']]) +
+      intro: 'How much should ' + NAME + ' do by himself? They can always say "show me how" or "let\u2019s do it together".',
+      body: () => choices('mode', [['do', 'Auto', 'Recommended. ' + NAME + ' does the whole task and asks only what he must. ' +
+          'Passwords, card numbers and the final Buy or Delete stay theirs, and a message waits for them to send unless they asked him to send it.'],
+        ['together', 'Do it together', NAME + ' does the routine clicks; they do the personal steps.'],
+        ['teach', 'Show me how', 'They do every click, and ' + NAME + ' points.']]) +
         '<h3>Open beside my programs</h3><p>When ' + esc(NAME) + ' opens, he takes the right third of the screen and the program they are using fills the rest. ' +
         'When he closes, the program fills the whole screen again.</p>' +
         choices('dockPanel', [[true, 'On', 'Recommended'], [false, 'Off', 'He opens as a smaller panel in a corner']], 'three') },
@@ -351,12 +369,13 @@
     return {
       userName: String(d.userName || '').trim(), city: String(d.city || '').trim(),
       textScale: Math.min(1.6, Math.max(1, round1(+d.textScale || 1))),
-      ttsVoice: d.ttsVoice || NATURAL[0][0], voiceName: d.voiceName || '', speechRate: +d.speechRate || 0.9, muted: !!d.muted, mode: d.mode || 'together',
+      ttsVoice: d.ttsVoice || NATURAL[0][0], voiceName: d.voiceName || '', speechRate: +d.speechRate || 0.9, muted: !!d.muted, mode: d.mode || 'do',
       email: { provider: d.email.provider || '', address: String(d.email.address || '').trim() },
       photos: { provider: d.photos.provider || '' }, video: { provider: d.video.provider || '' },
-      contacts: (d.contacts || []).map((c) => ({ name: String(c.name || '').trim(), relation: String(c.relation || '').trim(),
+      // Other keys on a contact (added: 'voice' when Barnaby saved it) are kept, so a save here never erases them.
+      contacts: (d.contacts || []).map((c) => Object.assign({}, c, { name: String(c.name || '').trim(), relation: String(c.relation || '').trim(),
         email: String(c.email || '').trim(), phone: String(c.phone || '').trim() })).filter((c) => c.name),
-      family: { name: String(d.family.name || '').trim(), phone: String(d.family.phone || '').trim(),
+      family: { name: String(d.family.name || '').trim(), phone: String(d.family.phone || '').trim(), email: String(d.family.email || '').trim(),
         ntfyTopic: String(d.family.ntfyTopic || '').trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64),
         alertConsent: d.family.alertConsent === 'tell_family' ? 'tell_family' : 'just_me', weeklyNote: !!d.family.weeklyNote },
       apiKey: String(d.apiKey || '').trim(), // '********' = unchanged (config.js ignores it)
@@ -480,6 +499,7 @@
       ['Voice', voiceTitle(d)],
       ['Email', label('email')], ['Photos', label('photos')], ['Video calls', label('video')],
       ['Family and friends', d.contacts.length ? d.contacts.map((c) => c.name).join(', ') : 'Nobody yet'],
+      ['Family helper', d.family.name ? [d.family.name, d.family.phone, d.family.email].filter(Boolean).join(', ') : 'Not chosen yet'],
       ['Scam alerts', d.family.alertConsent !== 'tell_family' ? 'Just me: no alerts go to anyone'
         : d.family.ntfyTopic ? 'Tell ' + fam + ' if I might be in a scam' : 'Tell ' + fam + ', but there is no alert code yet'],
       ['Weekly note', d.family.weeklyNote ? 'Yes, numbers only' : 'No'],
@@ -549,9 +569,15 @@
       return save();
     }
     if (b.id === 'test-voice') return testVoice();
+    if (b.hasAttribute('data-pick-helper')) {
+      const c = draft.contacts[+b.getAttribute('data-pick-helper')] || {};
+      Object.assign(draft.family, { name: String(c.name || '').trim(), phone: String(c.phone || '').trim(), email: String(c.email || '').trim() });
+      rerender('family'); document.querySelector('#sec-family [data-pick-helper][aria-pressed="true"]').focus();
+      return save();
+    }
     if (b.hasAttribute('data-undo-remove') && removed) {
       draft.contacts.splice(Math.min(removed.i, draft.contacts.length), 0, removed.c);
-      removed = null; rerender('contacts'); $('#h-contacts').focus();
+      removed = null; rerender('contacts'); rerender('family'); $('#h-contacts').focus();
       return save();
     }
     if (b.hasAttribute('data-add-contact')) {
@@ -564,7 +590,7 @@
     if (b.hasAttribute('data-remove')) {
       const i = +b.getAttribute('data-remove');
       removed = { i, c: draft.contacts.splice(i, 1)[0] };
-      rerender('contacts'); $('#h-contacts').focus();
+      rerender('contacts'); rerender('family'); $('#h-contacts').focus();
       return save();
     }
     if (b.hasAttribute('data-make-topic')) {
@@ -617,7 +643,13 @@
       fs.querySelector('legend').textContent = 'Person ' + i + (n ? ': ' + n : '');
       fs.querySelector('.remove span').textContent = 'Remove ' + (n || 'this person');
     }
-    if (p === 'family.name') document.querySelectorAll('[data-fam-name]').forEach((el) => { el.textContent = famName() || 'my family'; });
+    if (/^contacts\./.test(p)) rerender('family'); // the helper picker lists them (a no-op when not on screen)
+    const cm = /^contacts\.(\d+)\./.exec(p); // a family edit of a contact saved by voice: now the family entered it (trusted)
+    if (cm && draft.contacts[+cm[1]]) delete draft.contacts[+cm[1]].added;
+    if (p === 'family.name') {
+      document.querySelectorAll('[data-fam-name]').forEach((el) => { el.textContent = famName() || 'my family'; });
+      document.querySelectorAll('[data-pick-helper]').forEach((x) => x.setAttribute('aria-pressed', String(x.querySelector('.choice-label').textContent.trim() === famName())));
+    }
     save();
   });
 

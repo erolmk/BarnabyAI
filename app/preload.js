@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('helper', {
   deleteLesson: (id) => ipcRenderer.invoke('delete-lesson', id),
   runCheck: (name) => ipcRenderer.invoke('run-check', name),
   spoken: (id) => ipcRenderer.send('spoken', id),
+  sayLine: (text, o) => ipcRenderer.send('say-line', String(text || '').slice(0, 1000), o || {}), // the widget's own spoken lines and Say it again, in the natural voice
   testVoice: (o) => ipcRenderer.invoke('tts-test', o || {}), // -> {chunks} | {error: 'muted'|'local'|kind}; plays only on the Settings click
   overlayDismiss: (action) => ipcRenderer.send('overlay-dismiss', action || null), // null | 'close_page' | 'call_family'
   getWeather: () => ipcRenderer.invoke('get-weather'),

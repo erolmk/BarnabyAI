@@ -285,3 +285,14 @@ test('scam episode: only allowlisted reads run; remote session: nothing runs', (
 test('at least 60 commands are covered', () => {
   assert.ok(READ_ONLY.length + FALSE_POSITIVES.length + SNEAKY.length + HARD_REFUSE.length >= 60);
 });
+
+// The two lookup shapes from a real session (2026-09-28) are reads; the same shapes with code inside are not.
+test('the (x86) folder variable and a one-comparison Where-Object block count as reads', () => {
+  const B = String.fromCharCode(92);
+  const zoom = ['$env:APPDATA', '$env:ProgramFiles', '${env:ProgramFiles(x86)}'].map((d) => '"' + d + B + 'Zoom' + B + 'bin' + B + 'Zoom.exe"').join(',');
+  assert.deepStrictEqual(check('Get-ChildItem ' + zoom + ' -ErrorAction SilentlyContinue'), { verdict: 'auto', reason: '', rule: 'read' });
+  assert.strictEqual(check("Get-StartApps | Where-Object {$_.Name -like '*zoom*'}").verdict, 'auto');
+  for (const c of ['Get-StartApps | Where-Object {$_.Name -like "$(Remove-Item x)"}', "Get-StartApps | Where-Object {$_.Name -eq 'a'; Remove-Item b}",
+    'Get-StartApps | Where-Object {$_ | Remove-Item}', 'Get-ChildItem ${env:OPENROUTER_API_KEY}', 'Get-ChildItem ${env:TEMP}']) assert.notStrictEqual(check(c).verdict, 'auto', c);
+  assert.strictEqual(check('Start-Process "C:' + B + 'Program Files' + B + 'Zoom' + B + 'bin' + B + 'Zoom.exe"').verdict, 'confirm', 'a launch is not a lookup');
+});

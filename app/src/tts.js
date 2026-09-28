@@ -1,7 +1,8 @@
 // Barnaby's natural voice (research/07_voice.md): Microsoft MAI-Voice-2 through OpenRouter /api/v1/audio/speech, on
 // the key the brain already uses. Main process only, so the key never reaches a renderer: the widget gets PCM.
 // speak(text, opts) -> async iterator of {seq, pcm: Buffer (16-bit mono PCM), rate, gapMs, words, last}. One request
-// per sentence, the next one already in flight while this one plays, so only the first sentence's wait is heard.
+// per group of sentences (up to MAX_CHUNK characters, so the model keeps its phrasing across them), the next group
+// already in flight while this one plays, so only the first wait is heard.
 const { tag, RETRY } = require('./llm');
 const product = require('./product');
 
@@ -15,32 +16,50 @@ const MODEL = 'microsoft/mai-voice-2';
 const VOICES = ['en-US-Ethan:MAI-Voice-2', 'en-US-Grant:MAI-Voice-2', 'en-US-Jasper:MAI-Voice-2', 'en-US-Harper:MAI-Voice-2'];
 const LOCAL = 'local';
 const COOLDOWN_MS = 5 * 60 * 1000; // after a failure the Windows voice speaks for 5 minutes: no flipping voices mid-task
+// A warmer delivery (the owner asked for "more enthusiastic"): an Azure speaking style, only on the voices that have
+// one. A style speeds Ethan up (measured 2026-09-27, one 14-word line: plain 158 wpm, 'happy' 197 wpm), so the pace
+// is slowed to keep UX 9.1's 140-150 wpm. Bad news, scams and refusals stay in the plain, calm voice.
+// ponytail: STYLE_PACE is one measurement on one line; re-measure with 1-2 calls after the OpenRouter top-up.
+const STYLED = new Set(['en-US-Ethan:MAI-Voice-2', 'en-US-Harper:MAI-Voice-2']);
+const STYLE_PACE = 0.8;
+const CALM = /\b(scam\w*|sorry|stop(ped)?|careful|safe(ty)?|warning|hang up|private|password|bank|police|can't|can’t|cannot|won't|won’t|couldn't|couldn’t|wrong|problem)\b/i;
+const MAX_CHUNK = 220; // ponytail: fixed size; one request per ~2-3 sentences keeps the model's phrasing
 
-// UX 9.1: 350 ms between sentences, 600 ms after "Step 2 of 5."; the model's own edge silence is trimmed first
-// so these are the real gaps. Same sentence split as ui/voice.js.
+// UX 9.1: 350 ms between chunks, 600 ms after "Step 2 of 5." (always a chunk of its own); the model's own edge
+// silence is trimmed first so these are the real gaps. Same sentence split as ui/voice.js, then consecutive
+// sentences are grouped up to MAX_CHUNK characters: one request per sentence reset the intonation at every full stop.
 function chunks(text) {
-  const parts = (String(text || '').match(/[^.!?…]+[.!?…]*["')\]]*\s*/g) || []).map((s) => s.trim()).filter(Boolean);
-  return parts.map((t, i) => ({ text: t, gapMs: i === parts.length - 1 ? 0 : /^step \d+ of \d+[.!]?$/i.test(t) ? 600 : 350 }));
+  const out = [];
+  for (const t of (String(text || '').match(/[^.!?…]+[.!?…]*["')\]]*\s*/g) || []).map((s) => s.trim()).filter(Boolean)) {
+    const step = /^step \d+ of \d+[.!]?$/i.test(t), cur = out[out.length - 1];
+    if (cur && !cur.step && !step && cur.text.length + 1 + t.length <= MAX_CHUNK) cur.text += ' ' + t;
+    else out.push({ text: t, step });
+  }
+  return out.map((c, i) => ({ text: c.text, gapMs: i === out.length - 1 ? 0 : c.step ? 600 : 350 }));
 }
 
-// Drop leading/trailing silence (10 ms frames under ~-40 dBFS), keep 30 ms of air on each side.
+// Drop leading/trailing silence (10 ms frames under ~-40 dBFS), keep 30 ms of air before and 80 ms after (a last
+// consonant decays under the threshold for 30-60 ms; 30 ms shaved it).
 function trim(pcm, rate) {
-  const n = pcm.length >> 1, f = Math.max(1, Math.round(rate / 100)), pad = Math.round(rate * 0.03);
+  const n = pcm.length >> 1, f = Math.max(1, Math.round(rate / 100)), pad = Math.round(rate * 0.03), tail = Math.round(rate * 0.08);
   const loud = (i) => { let s = 0; for (let j = i; j < Math.min(n, i + f); j++) { const v = pcm.readInt16LE(j * 2); s += v * v; } return Math.sqrt(s / f) > 330; };
   let a = 0, b = n;
   while (a < n && !loud(a)) a += f;
   while (b > a && !loud(Math.max(a, b - f))) b -= f;
   if (a >= b) return pcm.subarray(0, 0);
-  return pcm.subarray(Math.max(0, a - pad) * 2, Math.min(n, b + pad) * 2);
+  return pcm.subarray(Math.max(0, a - pad) * 2, Math.min(n, b + tail) * 2);
 }
 
 // One sentence. 8 s per attempt; one retry on 408/429/5xx or a dropped connection, none after a timeout (a hung
 // service gets the Windows voice now, not 16 s of silence). Errors carry e.kind like llm.js ('aborted' on Stop).
-async function synth(text, { apiKey, model, voice, speed = 0.9, signal, timeoutMs = 8000, fetchImpl = fetch }) {
+async function synth(text, { apiKey, model, voice, speed = 0.9, style = '', signal, timeoutMs = 8000, fetchImpl = fetch }) {
   if (!apiKey) throw Object.assign(new Error('no API key'), { kind: 'nokey' });
   if (!ZDR_TTS.has(model)) throw Object.assign(new Error('TTS model not on the zero-retention list: ' + model), { kind: 'notzdr' });
   // Pace comes from the model's own speed (0.8 Slower / 0.9 Normal / 1.0 A bit faster), never a time-stretch.
-  const body = JSON.stringify({ model, input: text, voice, response_format: 'pcm', speed, provider: { zdr: true, data_collection: 'deny' } });
+  // A style goes to Azure as provider.options.azure.style (same ZDR endpoint); ignored, it is just the plain voice.
+  const provider = { zdr: true, data_collection: 'deny' };
+  if (style) provider.options = { azure: { style } };
+  const body = JSON.stringify({ model, input: text, voice, response_format: 'pcm', speed, provider });
   let last;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -68,7 +87,7 @@ async function synth(text, { apiKey, model, voice, speed = 0.9, signal, timeoutM
 // Session memory only (repeated lines, "Say it again"): never written to disk (safety.html: nothing saved).
 // ponytail: a 64-sentence LRU in a Map; bundled fixed phrases (07_voice phase 2) would live in ui/assets/voice.
 const mem = new Map();
-const key = (o, t) => o.model + '|' + o.voice + '|' + (o.speed || 0.9) + '|' + t;
+const key = (o, t) => o.model + '|' + o.voice + '|' + (o.speed || 0.9) + '|' + (o.style || '') + '|' + t;
 function remember(k, v) { mem.delete(k); mem.set(k, v); if (mem.size > 64) mem.delete(mem.keys().next().value); }
 
 async function* speak(text, opts) {
@@ -93,10 +112,14 @@ async function* speak(text, opts) {
 
 // Who says a line: {apiKey, model, voice, speed} for the natural voice, or null for the Windows voice. Muted
 // (HELPER_MUTE=1 too) is null, so nothing is ever sent; so is a line holding a private number (guardian.sensitive).
+// settings.ttsStyle: 'happy' by default, 'none' turns it off. The Flash model takes the -Flash voice id (07_voice).
 function pick(s, text, { now = Date.now(), downUntil = 0, sensitive = false } = {}) {
   if (!s || s.muted || !s.apiKey || s.ttsVoice === LOCAL || sensitive || now < downUntil || !chunks(text).length) return null;
-  return { apiKey: s.apiKey, model: s.ttsModel || MODEL, voice: VOICES.includes(s.ttsVoice) ? s.ttsVoice : VOICES[0],
-    speed: Math.min(1.2, Math.max(0.7, Number(s.speechRate) || 0.9)) };
+  const model = s.ttsModel || MODEL, voice = VOICES.includes(s.ttsVoice) ? s.ttsVoice : VOICES[0];
+  const style = s.ttsStyle === 'none' || !STYLED.has(voice) || CALM.test(text) ? '' : String(s.ttsStyle || 'happy');
+  const rate = Math.min(1.2, Math.max(0.7, Number(s.speechRate) || 0.9));
+  return { apiKey: s.apiKey, model, voice: /-flash$/.test(model) ? voice.replace(/:MAI-Voice-2$/, ':MAI-Voice-2-Flash') : voice,
+    speed: Math.round(Math.min(1.2, Math.max(0.5, rate * (style ? STYLE_PACE : 1))) * 100) / 100, style };
 }
 
 // main's side of every spoken line: each line's job (the widget's ack, Talk and Stop cancel it) and, after a failure,
@@ -114,7 +137,10 @@ function createSpeaker({ send, log = () => {}, onProblem = () => {}, fetchImpl, 
       runs++;
       let next = 0;
       try {
-        for await (const c of speak(text, { ...plan, signal: ac.signal, fetchImpl })) { send({ id, ...c }); next = c.seq + 1; }
+        for await (const c of speak(text, { ...plan, signal: ac.signal, fetchImpl })) {
+          if (!c.seq) log('[tts] first', (now() - t0) + ' ms', text.length + ' chars', plan.style || 'plain'); // latency, never the words
+          send({ id, ...c }); next = c.seq + 1;
+        }
       } catch (e) {
         if (!ac.signal.aborted) {
           downUntil = now() + COOLDOWN_MS;
@@ -132,4 +158,4 @@ function createSpeaker({ send, log = () => {}, onProblem = () => {}, fetchImpl, 
   };
 }
 
-module.exports = { speak, chunks, trim, synth, pick, createSpeaker, VOICES, LOCAL, MODEL, ZDR_TTS, COOLDOWN_MS, _mem: mem };
+module.exports = { speak, chunks, trim, synth, pick, createSpeaker, VOICES, LOCAL, MODEL, ZDR_TTS, COOLDOWN_MS, STYLE_PACE, _mem: mem };

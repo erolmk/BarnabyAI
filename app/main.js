@@ -324,11 +324,11 @@ function overlay(msg) {
 }
 
 // ---------- the ui bridge the agent talks to ----------
-// UX 14: reading-time wait max(2500, 350 ms/word); when speaking this is only a fallback for a lost ack
-// (the natural voice gets 6 s on top: its first sentence takes 1-2 s to arrive).
-function readingMs(text, muted, natural) {
+// UX 14: reading-time wait max(2500, 350 ms/word at the normal 0.9 pace, scaled by the chosen speed); when speaking
+// this is only a fallback for a lost ack (the natural voice gets 6 s on top: its first sentence takes 1-2 s to arrive).
+function readingMs(text, muted, natural, rate) {
   const words = text.split(/\s+/).length;
-  const read = Math.max(2500, 350 * words);
+  const read = Math.max(2500, 350 * words * 0.9 / (Number(rate) || 0.9));
   return muted ? read : read + (natural ? 6000 : 4000);
 }
 
@@ -338,45 +338,49 @@ function readingMs(text, muted, natural) {
 // Windows voice for the rest of that line and 5 minutes. Muted lines, and lines holding a private number, never
 // reach the voice service.
 const voiceOut = tts.createSpeaker({ send: (m) => send(widgetWin, 'tts', m), log, onProblem: (kind) => connectionProblem(kind) });
-function speakOut(id, text) {
+// again: the widget's "Say it again" (no second caption; a little slower, UX 9.5).
+function speakOut(id, text, again) {
   const s = config.get();
   let sensitive = false;
   try { sensitive = !!(guardian && guardian.sensitive(text)); } catch (_) { sensitive = true; }
   const plan = voiceOut.plan(s, text, sensitive);
-  send(widgetWin, 'say', { id, text, speak: !s.muted, natural: !!plan }); // before any 'tts' for this id
+  if (plan && again) plan.speed = Math.max(0.5, Math.round((plan.speed - 0.05) * 100) / 100);
+  send(widgetWin, 'say', { id, text, speak: !s.muted, natural: !!plan, again: !!again }); // before any 'tts' for this id
   if (plan) voiceOut.run(id, text, plan);
   return !!plan;
 }
 
 const ui = {
   ownPid: process.pid,
-  say(text, { wait = true } = {}) {
+  say(text, { wait = true, again = false } = {}) {
     text = String(text || '').trim();
     if (!text) return Promise.resolve();
     const id = ++saySeq;
-    const muted = !!config.get().muted;
+    const { muted, speechRate } = config.get();
     if (!widgetExpanded) expandWidget(true); // every spoken line is captioned; the collapsed pill has no caption (UX 5.1)
     if (wake) wake.pause(); // never let Barnaby's own voice ("I'm Barnaby...") wake him
-    const natural = speakOut(id, text);
-    send(launcherWin, 'say', { id, text, speak: false });
+    const natural = speakOut(id, text, again);
+    if (!again) send(launcherWin, 'say', { id, text, speak: false });
     log('[say]', text.length + ' chars'); // the log never holds what was said (04_safety 7.1)
     // Muted, the widget acks as soon as the caption is up, so the reading time decides (UX 5.2). Stop ends it at once.
     // A wait:false line is registered too, so the wake loop stays paused until Barnaby's voice has finished.
     const spoken = new Promise((resolve) => {
       const done = () => { clearTimeout(t); pendingSay.delete(id); resolve(); };
-      const t = setTimeout(done, readingMs(text, muted, natural));
+      const t = setTimeout(done, readingMs(text, !!muted, natural, speechRate));
       pendingSay.set(id, { done, byAck: !muted });
     });
     return wait ? spoken : Promise.resolve();
   },
   status(st) { lastStatus = st || { state: 'idle' }; broadcast('status', lastStatus); },
-  ask({ question, choices = [], kind = 'choice', details = null }) {
+  ask({ question, choices = [], kind = 'choice', details = null, noAutoMic = false }) {
     if (pendingAsk) ui.cancelAsk();
     const requestId = 'q' + (++askSeq);
     confirmOpen = kind === 'confirm'; // the confirm card may use up to 90% of the screen height
     expandWidget(true);
     const id = ++saySeq;
-    const msg = { requestId, question, choices, kind, details };
+    // sayId: the widget opens the mic once it is said; noAutoMic: main's own questions (a scam page's looping voice or
+    // a TV must never answer them, and what they hear would become a new request) wait for Talk or a button.
+    const msg = { requestId, question, choices, kind, details, sayId: id, noAutoMic: !!noAutoMic };
     speakOut(id, question);
     broadcast('ask', msg);
     log('[ask]', kind, choices.length + ' choices');
@@ -506,6 +510,10 @@ async function handleUtterance(text, opts = {}) {
   expandWidget(true);
   const me = routing = {};
   ui.status({ state: 'thinking' });
+  // Heard, and nothing said yet 2.5 s later: a short spoken sign of life (UX 9.7), once. Any line or question from
+  // the agent first (saySeq moved) skips it. After its first time it comes from tts.js's memory, with no wait.
+  const said = saySeq;
+  const ackT = setTimeout(() => { if (routing === me && saySeq === said && !pendingAsk) ui.say('One moment.', { wait: false }); }, 2500);
   try {
     await agent.handle(text, opts);
   } catch (e) {
@@ -513,6 +521,7 @@ async function handleUtterance(text, opts = {}) {
     ui.say("I'm sorry, something went wrong on my side. Let's try that again in a moment.");
     ui.status({ state: 'idle' });
   } finally {
+    clearTimeout(ackT);
     if (routing === me) routing = null;
   }
 }
@@ -662,7 +671,7 @@ const CLOSE_YES = 'Yes, close it', CLOSE_NO = 'No, leave it';
 let scamAskId = null;
 async function offerClose(target) {
   if (busyNow() || pendingAsk) return ui.say('If you would like me to close it, press "Close this page for me".', { wait: false });
-  const q = ui.ask({ question: 'Would you like me to close it for you?', choices: [CLOSE_YES, CLOSE_NO], kind: 'choice' });
+  const q = ui.ask({ question: 'Would you like me to close it for you?', choices: [CLOSE_YES, CLOSE_NO], kind: 'choice', noAutoMic: true });
   const id = scamAskId = pendingAsk.requestId;
   let ans;
   try { ans = await q; } catch (_) { return; } finally { if (scamAskId === id) scamAskId = null; }
@@ -716,7 +725,7 @@ async function askToQuit() {
     stopAll();
     let ans;
     try {
-      ans = await ui.ask({ question: 'Are you sure you want to close me? While I am closed, I cannot help you or watch for scams.', choices: [QUIT_YES, QUIT_NO], kind: 'choice' });
+      ans = await ui.ask({ question: 'Are you sure you want to close me? While I am closed, I cannot help you or watch for scams.', choices: [QUIT_YES, QUIT_NO], kind: 'choice', noAutoMic: true });
     } catch (_) { return; } // stopped
     if (ans !== QUIT_YES) {
       if (ans === QUIT_NO) return ui.say('Good, I will stay right here.', { wait: false });
@@ -897,10 +906,11 @@ function registerIpc() {
   ipcMain.handle('open-tile', (_e, id, arg) => { openTile(id, arg); return true; });
   ipcMain.handle('transcribe', async (_e, wavBase64) => {
     const s = config.get();
+    const t0 = Date.now();
     try {
       const hints = [s.userName, s.family && s.family.name, ...(s.contacts || []).map((c) => c.name), product.assistantName].filter(Boolean);
       const r = await llm.transcribe({ apiKey: s.apiKey, model: s.sttModel, wavBase64, hints });
-      log('[stt]', String(r.text || '').length + ' chars');
+      log('[stt]', String(r.text || '').length + ' chars', (Date.now() - t0) + ' ms');
       return { text: r.text };
     } catch (e) {
       log('transcribe failed', e.kind || 'other');
@@ -926,6 +936,9 @@ function registerIpc() {
   ipcMain.handle('run-check', (_e, name) => support.runCheck(name));
   // The widget finished a line (or dropped it: Talk, Stop): the rest of its voice is not needed any more.
   ipcMain.on('spoken', (_e, id) => { voiceOut.cancel(id); const p = pendingSay.get(id); if (p && p.byAck) p.done(); });
+  // The widget's own spoken lines ("All right, I'll talk more slowly.", "Say it again"): through ui.say, so they are
+  // in Barnaby's natural voice too, not the computer's own. again: no second caption, a little slower.
+  ipcMain.on('say-line', (_e, text, o) => { ui.say(String(text || '').slice(0, 1000), { wait: false, again: !!(o && o.again) }); });
   // Settings "Test the voice" (only on that click): the chosen voice and pace, made here so the key stays in main.
   // {error:'muted'} plays nothing at all; {error:'local'} means the page uses the computer's own voice.
   ipcMain.handle('tts-test', async (_e, o) => {
@@ -1030,10 +1043,16 @@ async function smokeDock(out, shot) {
     d.title = await js('document.getElementById("status").textContent');
     await shot(widgetWin, 'widget-docked');
     ui.status({ state: 'thinking', effort: 'high' });
+    await wait(300);
+    d.thinkBig = await js('!document.getElementById("thinkBig").hidden'); // the big "please wait" sign
+    d.speedButtons = await js('document.querySelectorAll("#speedRow button").length');
+    await shot(widgetWin, 'widget-thinking');
     expandWidget(false); await wait(300);
     d.pillBusy = await js('document.getElementById("pillState").textContent');
     await shot(widgetWin, 'widget-pill-busy');
     ui.status({ state: 'idle' });
+    await wait(100);
+    d.thinkBigIdle = await js('!document.getElementById("thinkBig").hidden');
     d.pill = widgetWin.getBounds();
     d.pillWant = geom.atCorner(geom.size(false, disp.workArea), geom.nearestCorner(pill, screen.getDisplayMatching(pill).workArea), disp.workArea);
     config.save({ dockPanel: false });
@@ -1053,6 +1072,8 @@ async function smokeDock(out, shot) {
     if (!d.bodyDocked) bad.push('the widget page was not told it is docked');
     if (d.planItems !== 4 || d.title !== 'Clicking \u201cNew mail\u201d') bad.push('status card: ' + d.planItems + ' plan steps, title ' + d.title);
     if (d.pillBusy !== 'Thinking\u2026') bad.push('the pill says ' + JSON.stringify(d.pillBusy) + ' while thinking');
+    if (!d.thinkBig || d.thinkBigIdle) bad.push('big thinking sign: shown while thinking ' + d.thinkBig + ', while idle ' + d.thinkBigIdle);
+    if (d.speedButtons !== 3) bad.push('speed row has ' + d.speedButtons + ' buttons');
     if (!sameRect(d.pill, d.pillWant)) bad.push('pill after docking ' + JSON.stringify(d.pill) + ', not back in its corner ' + JSON.stringify(d.pillWant));
     if (!sameRect(d.floating, d.floatingWant)) bad.push('floating panel ' + JSON.stringify(d.floating) + ' != ' + JSON.stringify(d.floatingWant));
     if (d.nativeCalls) bad.push('the hidden run called the native AppBar or moved a window');
@@ -1097,6 +1118,9 @@ async function runSmoke() {
     resolveAsk(null, 'no');
     await wait(300);
     if (quitting || !alive(launcherWin)) out.errors.push('answering No still closed Barnaby');
+    // Muted (HELPER_MUTE=1): a question never opens the microphone by itself (no voice, no getUserMedia here).
+    out.autoMicMuted = await widgetWin.webContents.executeJavaScript('document.getElementById("listenRow").hidden');
+    if (!out.autoMicMuted) out.errors.push('muted, but the question opened the microphone by itself');
   } catch (e) { out.errors.push('quit ask: ' + e.message); }
   // Hidden-window checks: widget sizes (panel, confirm card, pill corner) and the settings views.
   const shot = async (w, name) => fs.writeFileSync(path.join(shotDir, name + '.png'), (await w.webContents.capturePage()).toPNG());
@@ -1134,10 +1158,12 @@ async function runSmoke() {
       runs: voiceOut.runs,
       muted: !!config.get().muted,
       test: await settingsWin.webContents.executeJavaScript('window.helper.testVoice({}).then((r) => r && r.error)'),
-      widget: await widgetWin.webContents.executeJavaScript('typeof Voice.play === "function" && typeof Voice.replay === "function" && typeof window.helper.on("tts", () => {}) === "function"'),
+      widget: await widgetWin.webContents.executeJavaScript('typeof Voice.play === "function" && typeof Voice.replay === "function" && typeof Voice.earcon === "function" && typeof window.helper.on("tts", () => {}) === "function"'),
+      sayLine: await widgetWin.webContents.executeJavaScript('typeof window.helper.sayLine === "function"'), // preload's say-line bridge
     };
     if (out.tts.muted && (out.tts.runs || out.tts.test !== 'muted')) out.errors.push('tts: muted, but ' + out.tts.runs + ' lines went to the voice service, test ' + out.tts.test);
     if (!out.tts.widget) out.errors.push('tts: the widget cannot play the natural voice');
+    if (!out.tts.sayLine) out.errors.push('tts: preload has no sayLine, so the widget\'s own lines use the computer\'s voice');
     await smokeDock(out, shot);
     addDiary('warning', alerts.warningLine(product.assistantName, 'tech_support')); // shown in the diary shot, removed below
     addDiary('command', alerts.commandLine(product.assistantName, { cmd: 'Get-Service Spooler', verdict: 'auto', ok: true }));

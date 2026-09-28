@@ -126,8 +126,8 @@ test('Anne Marie flow in together mode: narrate before acting, confirm card, per
   assert.ok(h.guardian.gates.length >= 4);
   assert.equal(h.guardian.gates[0].context.window.title, 'Inbox - Gmail - Google Chrome');
   assert.equal(h.guardian.gates.find((g) => g.action.tool === 'click').context.element.name, 'Compose');
-  // playbook hints injected for this goal
-  assert.match(h.llm.calls[0].messages[0].content, /Send photos by email/);
+  // playbook hints injected for this goal, in the first user message (the system prompt stays static for the cache)
+  assert.match(h.llm.calls[0].messages[1].content, /Send photos by email/);
   assert.equal(h.agent.busy, false);
 });
 
@@ -189,7 +189,7 @@ test('teach-mode schemas have no click/type_text; support has only its tools', a
   assert.ok(names('teach').includes('guide_user') && names('teach').includes('done'));
   assert.ok(names('together').includes('click') && names('do').includes('type_text'));
   assert.deepEqual(names('support').sort(), ['apply_fix', 'ask_user', 'done', 'open', 'run_check', 'run_command', 'say', 'set_plan']);
-  assert.deepEqual(names('chat').sort(), ['ask_user', 'done', 'open', 'remember', 'run_check', 'run_command', 'say', 'update_settings']);
+  assert.deepEqual(names('chat').sort(), ['ask_user', 'done', 'open', 'remember', 'run_check', 'run_command', 'save_contact', 'say', 'update_settings']);
   assert.ok(!names('chat').includes('click') && !names('chat').includes('guide_user'), 'chat cannot touch the screen');
   for (const t of tools.schemas('together')) {
     assert.equal(t.type, 'function');
@@ -656,11 +656,19 @@ test('run_command: read-only runs, changing shows a card first, hard refusals ne
   assert.match(r[0], /PS OUTPUT/, 'read-only command ran with no card');
   assert.match(r[1], /PS OUTPUT/, 'changing command ran after a yes');
   assert.match(r[2], /^REFUSED/, 'disabling Defender is hard-refused');
-  // the confirm card showed the plain explanation first, the exact command below
-  const card = h.ui.asks.find((a) => a.kind === 'confirm' && a.details.fields.some((f) => /Restart-Service/.test(f.value)));
+  // the question is plain words; the exact command stays on the card for the family (lookups never get a card)
+  const card = h.ui.asks.find((a) => a.kind === 'confirm' && a.details.title === 'A change to your computer');
   assert.ok(card, 'a confirm card for the changing command');
+  assert.ok(!card.question.includes('Restart-Service'), 'no command text in the question');
+  assert.deepEqual(card.details.fields[1], { label: 'For family: the exact command', value: 'Restart-Service Spooler' });
   assert.equal(card.details.fields[0].label, 'What this does');
   assert.match(card.details.fields[0].value, /printing service/);
+  // the lookup ran quietly: not spoken, no card, not a lesson step
+  assert.ok(!h.ui.said.includes('Looking at what is busy.'));
+  assert.equal(h.ui.asks.length, 1);
+  assert.ok(h.ui.statuses.some((s) => s.label === 'Checking your computer…'));
+  assert.equal(commands[0].cmd.startsWith('Get-Process'), true, 'the safety diary keeps the exact command');
+  assert.match(r[0], /never the command/);
   assert.deepEqual(commands.map((c) => c.verdict), ['auto', 'confirm', 'refuse']);
   assert.equal(commands[2].ok, false);
   // never ran the Defender command

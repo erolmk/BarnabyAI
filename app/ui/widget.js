@@ -21,7 +21,25 @@
     document.documentElement.style.setProperty('--ui-scale', String(Math.max(1, Math.min(1.6, scale))));
     if ((q.get('theme') || settings.theme) === 'dark') document.documentElement.dataset.theme = 'dark';
     else delete document.documentElement.dataset.theme;
+    renderSpeed();
     fitCompact();
+  }
+  // Speaking speed, one press away (the owner: "a toggle to speaking speed"). Same steps as Settings.
+  const SPEEDS = [0.8, 0.9, 1.0]; // Slower, Normal, Faster: same list in settings.js (test/setup.test.js checks)
+  const speedIdx = (r) => { r = +r || 0.9; return r < 0.85 ? 0 : r > 0.95 ? 2 : 1; }; // a rate set by voice (0.7, 1.1) shows as its nearest step
+  const SPEED_SAID = ['All right, I’ll talk more slowly.', 'All right, back to my normal speed.', 'All right, I’ll talk a little faster.'];
+  function renderSpeed() {
+    const row = $('speedRow');
+    if (!row) return;
+    row.hidden = !!settings.muted; // no voice, nothing to pace
+    const i = speedIdx(settings.speechRate);
+    row.querySelectorAll('button').forEach((b, j) => b.setAttribute('aria-pressed', String(j === i)));
+  }
+  function setSpeed(i) {
+    settings.speechRate = SPEEDS[i];
+    renderSpeed();
+    // said after the save, so it is already at the new pace, in the natural voice
+    Promise.resolve(H.saveSettings({ speechRate: SPEEDS[i] })).then(() => sayOwn(SPEED_SAID[i])).catch(() => {});
   }
   // Big text in a short window: drop the "More below" row (the wide scrollbar and the wheel remain) so the
   // words keep their room. ponytail: fixed thresholds; the real fix is main sizing the window by textScale.
@@ -73,6 +91,13 @@
     $('stDetail').textContent = v.detail;
     $('stDetail').hidden = !v.detail;
     $('eye').hidden = !(looked && v.state !== 'idle' && v.state !== 'looking'); // 'looking' says it in the card
+    // The big "please wait" sign (the owner: "big thinking indicator ... animated"): whenever he is working and
+    // nothing is asked of the person. Outside the scroll area, so it is always in view.
+    const noWait = !v.busy || !!openAsk || listening;
+    if ($('thinkBig').hidden !== noWait) { // the card changes height: keep the newest line in view
+      $('thinkBig').hidden = noWait;
+      if (!openAsk) requestAnimationFrame(showNewest);
+    }
     renderPlan(S.planWindow((localStatus || mainStatus).plan, window.innerHeight < 800 ? 4 : 6)); // short screens: fewer rows
     const pill = $('pill');
     pill.dataset.state = v.state;
@@ -101,16 +126,28 @@
     }
     if (pw.after) count(pw.after === 1 ? '1 more step after these' : pw.after + ' more steps after these');
   }
-  function onStatus(st) { mainStatus = st || { state: 'idle' }; renderStatus(); }
+  function onStatus(st) { mainStatus = st || { state: 'idle' }; clearWait(); renderStatus(); }
   function setLocal(st) { localStatus = st || null; renderStatus(); }
+  // Sent, waiting for main: "Thinking" at once instead of a flash of "Ready when you are", until main's own status,
+  // a line or a question arrives (15 s at most).
+  let waitT = null;
+  function thinkNow() {
+    setLocal({ state: 'thinking', wait: true });
+    clearTimeout(waitT);
+    waitT = setTimeout(clearWait, 15000);
+  }
+  function clearWait() { clearTimeout(waitT); if (localStatus && localStatus.wait) setLocal(null); }
 
-  // ---------- captions: last helper line big, the item before it small, a later "You said" below ----------
-  const lines = []; // {who: 'helper'|'you', text}
-  function addLine(who, text) {
-    lines.push({ who, text });
+  // ---------- captions: last helper line big, the item before it small, a later "You said" bubble below ----------
+  const lines = []; // {who: 'helper'|'you', text, how?: 'said'|'typed'|'chose', pending?}
+  function addLine(who, text, how) {
+    const l = { who, text, how };
+    lines.push(l);
     if (lines.length > 20) lines.shift();
     renderCaptions();
+    return l;
   }
+  function dropLine(l) { const i = lines.indexOf(l); if (i >= 0) { lines.splice(i, 1); renderCaptions(); } }
   function lastHelper() {
     for (let i = lines.length - 1; i >= 0; i--) if (lines[i].who === 'helper') return i;
     return -1;
@@ -119,15 +156,25 @@
     const i = lastHelper();
     const before = i > 0 ? lines[i - 1] : null;
     const after = lines.length - 1 > i ? lines[lines.length - 1] : null;
-    $('prevLine').textContent = before ? before.text : '';
-    $('prevLine').hidden = !before || !!openAsk;
+    const youBefore = before && before.who === 'you' ? before : null;
+    $('prevLine').textContent = before && !youBefore ? before.text : '';
+    $('prevLine').hidden = !before || !!youBefore || !!openAsk;
     $('curLine').textContent = i >= 0 ? lines[i].text : 'Press Talk, or type below, whenever you would like help.';
-    $('youSaid').textContent = after ? after.text : '';
-    $('youSaid').hidden = !after;
+    // His own words in a bubble of their own: a bold "You said" label, then the words as he said them (no quotes).
+    // Newest: below Barnaby's line; once Barnaby answers, it stays just above the answer.
+    bubble($('youBefore'), openAsk ? null : youBefore);
+    bubble($('youSaid'), after);
     const legend = document.querySelector('#answers .legend');
     if (legend) legend.hidden = i >= 0 && lines[i].text.trim() === legend.textContent.trim();
     if (!openAsk) showNewest();
     updateMore();
+  }
+  function bubble(el, l) {
+    el.hidden = !l;
+    if (!l) return;
+    el.querySelector('.you-how span').textContent = 'You ' + (l.how || 'said');
+    el.querySelector('.you-text').textContent = l.text;
+    el.classList.toggle('pending', !!l.pending);
   }
   // The newest line is always in view (instant, no animation); a line taller than the view shows its start.
   function showNewest() {
@@ -158,34 +205,47 @@
     }
   }
   function ack(s) { ttsLines.delete(s.id); if (s.id != null) H.spoken(s.id); }
+  let hushGen = 0; // hush() bumps it: a line that ends with it changed was cut short, not finished
   async function pump() {
     if (pumping) return;
     pumping = true;
     while (queue.length) {
       const s = queue.shift();
-      addLine('helper', s.text);
+      if (!s.again) addLine('helper', s.text); // "Say it again": the caption is already there
+      const g = hushGen;
+      let spoke = false;
       if (s.speak && !settings.muted && !DEMO && V && !listening) { // never talk into our own open microphone
         const opts = { text: s.text, rate: settings.speechRate, voiceName: settings.voiceName };
         const b = s.natural && V.play && ttsLines.get(s.id);
         await (b ? V.play(sentences(b), opts) : V.speak(s.text, opts)).catch(() => {});
+        spoke = true;
       }
       ack(s); // after the last sentence (main then stops making any more of this line)
+      // The question has been said to the end: open the microphone for the answer (UX 9.2's quiet no-speech close).
+      if (spoke && openAsk && s.id != null && openAsk.sayId === s.id && V.autoListen &&
+        V.autoListen(openAsk, { muted: settings.muted, listening, talking, demo: DEMO, gen: g, genNow: hushGen, enabled: settings.autoListen })) talk({ auto: true });
     }
     pumping = false;
   }
   function onSay(s) {
     if (!s || !String(s.text || '').trim()) { if (s && s.id != null) H.spoken(s.id); return; }
-    queue.push({ id: s.id, text: String(s.text).trim(), speak: s.speak !== false, natural: !!s.natural });
+    // A new line never lands silently in an open microphone nobody has spoken into yet (the auto one): close it.
+    if (autoMic && listening && !heardNow) { talkGen++; V.cancel(); listening = false; renderListening(); }
+    if (s.id != null) clearWait();
+    queue.push({ id: s.id, text: String(s.text).trim(), speak: s.speak !== false, natural: !!s.natural, again: !!s.again });
     if (s.natural && s.id != null) ttsLines.set(s.id, { items: [], wake: null });
     pump();
   }
   function say(text, speak) { onSay({ id: null, text, speak: !!speak }); } // our own lines (no ack)
+  // Our own spoken lines go through main, so they are in Barnaby's natural voice too (not the computer's own).
+  function sayOwn(text, o) { if (H.sayLine) H.sayLine(text, o); else say(text, true); }
   // Barge-in / Stop: silence now; queued lines still get their caption and their ack.
   function hush() {
+    hushGen++;
     if (V) V.stopSpeaking();
     while (queue.length) {
       const s = queue.shift();
-      addLine('helper', s.text);
+      if (!s.again) addLine('helper', s.text);
       ack(s);
     }
   }
@@ -272,6 +332,8 @@
     $('typeBox').hidden = true;
     $('smallBtn').hidden = $('smallBtn2').hidden = true; // never shrink away from an open question (UX 11.2)
     $('confirmRow').hidden = kind !== 'confirm';
+    clearWait();
+    renderStatus(); // the big "please wait" sign gives way to the question
     renderCaptions();
     const title = kind === 'confirm' ? $('cardTitle') : null;
     requestAnimationFrame(() => {
@@ -286,6 +348,9 @@
   }
 
   function closeAsk() {
+    // An auto microphone belongs to this question: a click on an answer (or the question going away) ends it,
+    // and talkGen drops what it heard, so it never goes to main as a new request.
+    if (autoMic && listening) { talkGen++; V.cancel(); }
     openAsk = null;
     document.body.classList.remove('asking');
     $('answers').hidden = true;
@@ -293,6 +358,7 @@
     $('typeBox').hidden = listening;
     $('smallBtn').hidden = $('smallBtn2').hidden = false;
     $('confirmRow').hidden = true;
+    renderStatus();
     renderCaptions();
   }
   function onAskCancel(c) { if (openAsk && c && c.requestId === openAsk.requestId) closeAsk(); }
@@ -302,8 +368,9 @@
     const id = openAsk.requestId;
     closeAsk();
     hush();
-    addLine('you', 'You chose: ' + shown);
+    addLine('you', shown, 'chose');
     H.answer(id, value);
+    thinkNow();
   }
 
   // ---------- talking ----------
@@ -331,28 +398,41 @@
     $('talkBtn').setAttribute('aria-pressed', String(listening));
     $('talkLabel').textContent = listening ? 'Done talking' : 'Talk to ' + NAME;
     if (!listening) { smooth = 0; $('meterFill').style.width = '0%'; }
-    setLocal(listening ? { state: 'listening' } : null);
+    // A closed microphone keeps the "Please wait" of an answer just given (a cancelled auto mic closes after it).
+    if (listening) setLocal({ state: 'listening' }); else if (!(localStatus && localStatus.wait)) setLocal(null);
     if (listening !== micShown && H.listening) { micShown = listening; H.listening(listening); } // launcher's Talk shows it too
     updateMore();
   }
 
-  async function talk() {
-    if (listening) { (DEMO ? demoMic : V).finish(); return; }
-    if (talking) { say('One moment — I’m working out what you said.'); return; }
+  // How long a pause ends what he says: short for a one-word choice, longer for a sentence (UX 9.2 allows 1.0-3.0 s).
+  // ponytail: fixed per context; UX 9.2's "+0.4 s after being cut off twice" is the upgrade.
+  const END_MS = { choice: 1000, text: 1400, free: 1300 };
+  let autoMic = false, heardNow = false; // the open microphone was opened by a question, and whether he has spoken yet
+  // opt.auto: opened by itself after a question was said (quiet: no nagging lines if nobody speaks).
+  async function talk(opt) {
+    const auto = !!(opt && opt.auto === true);
+    if (listening) { if (!auto) (DEMO ? demoMic : V).finish(); return; }
+    if (talking) { if (!auto) say('One moment — I’m working out what you said.'); return; }
     talking = true;
     const my = talkGen;
+    const askId = openAsk && openAsk.requestId; // what it hears belongs to this question only
+    let pend = null; // the "You said" bubble, shown the moment he has been heard
     try {
       hush(); // barge-in: stop speaking first
-      await wait(300); // do not hear our own last word
+      if (!settings.muted && !DEMO) V.earcon('open');
+      await wait(300); // do not hear our own last word (and the tone is over before the microphone opens)
       if (my !== talkGen) return;
       listening = true;
+      autoMic = auto; heardNow = false;
       renderListening();
       let rec = null;
       try {
-        rec = await (DEMO ? demoMic : V).listen({ onLevel: setLevel });
+        rec = await (DEMO ? demoMic : V).listen({ onLevel: setLevel, onState: (st) => { if (st === 'hearing') heardNow = true; },
+          silenceMs: !openAsk ? END_MS.free : openAsk.kind === 'choice' && (openAsk.choices || []).length ? END_MS.choice : END_MS.text, noSpeechMs: 8000 });
       } catch (e) {
         listening = false;
         renderListening();
+        if (auto) return; // he did not ask for it: the buttons are still there
         say('I can’t hear the microphone right now. You can type in the box instead.');
         $('typeInput').focus();
         return;
@@ -360,7 +440,11 @@
       listening = false;
       renderListening();
       if (my !== talkGen) return;
-      if (!rec) { say('Press Talk or F9 when you’re ready.'); return; }
+      if (!rec) { if (!auto) say('Press Talk or F9 when you’re ready.'); return; } // an auto microphone closes quietly
+      if (!settings.muted && !DEMO) V.earcon('heard');
+      pend = addLine('you', 'Writing down what you said…', 'said');
+      pend.pending = true;
+      renderCaptions();
       setLocal({ state: 'thinking', label: 'Writing down what you said…' });
       let r = null;
       try { r = await H.transcribe(rec.wavBase64); } catch (_) { r = { error: 'transcribe' }; }
@@ -372,15 +456,22 @@
         listening = false;
         renderListening();
       }
-      setLocal(null);
+      if (!(localStatus && localStatus.wait)) setLocal(null); // a button answered meanwhile: its "Please wait" stays
       if (my !== talkGen) return;
+      if (askId && (!openAsk || openAsk.requestId !== askId)) return; // that question was answered or went away: drop it
       const text = String((r && r.text) || '').trim();
-      if (!text) { say('I didn’t catch that — my fault. Could you say it again, or press a button?', true); return; }
-      addLine('you', 'You said: “' + text + '”');
+      if (!text) { sayOwn('I didn’t catch that — my fault. Could you say it again, or press a button?'); return; }
+      pend.text = text; // the bubble now holds his words
+      delete pend.pending;
+      pend = null;
+      renderCaptions();
       if (openAsk) { const id = openAsk.requestId; closeAsk(); H.answer(id, text); } else H.ask(text);
+      thinkNow();
     } finally {
+      if (pend) dropLine(pend); // nothing was written down (or Stop): no empty bubble stays
       talking = false;
-      if (!listening) setLocal(null);
+      autoMic = false;
+      if (!listening && !(localStatus && localStatus.wait)) setLocal(null);
     }
   }
 
@@ -390,8 +481,9 @@
     if (!text) { say('Type what you would like in the box first, or press Talk and say it.'); inp.focus(); return; }
     inp.value = '';
     if (openAsk) return answer(text, text);
-    addLine('you', 'You typed: “' + text + '”');
+    addLine('you', text, 'typed');
     H.ask(text);
+    thinkNow();
   }
 
   function halt() {
@@ -419,10 +511,13 @@
   function sayAgain() {
     const i = lastHelper();
     if (i < 0) { say('I haven’t said anything yet. Press Talk when you would like help.'); return; }
+    if (autoMic && listening && !heardNow) { talkGen++; V.cancel(); listening = false; renderListening(); } // an unused auto mic gives way
     if (settings.muted || DEMO || !V || listening) return; // the caption is already on screen
     hush();
     const again = V.replay && V.replay(lines[i].text); // the natural voice again, from memory
-    (again || V.speak(lines[i].text, { rate: (Number(settings.speechRate) || 0.9) - 0.05, voiceName: settings.voiceName })).catch(() => {});
+    if (again) again.catch(() => {});
+    else if (H.sayLine) H.sayLine(lines[i].text, { again: true }); // cut short or not kept: main makes it again, a little slower
+    else V.speak(lines[i].text, { rate: (Number(settings.speechRate) || 0.9) - 0.05, voiceName: settings.voiceName }).catch(() => {});
   }
 
   // ---------- "More below" (no tiny scrollbar as the only way down, UX 3.8) ----------
@@ -457,6 +552,7 @@
   $('yesBtn').addEventListener('click', () => answer('yes', 'Yes, that’s right'));
   $('noBtn').addEventListener('click', () => answer('no', 'No, change something'));
   $('moreBtn').addEventListener('click', more);
+  $('speedRow').querySelectorAll('button').forEach((b, i) => b.addEventListener('click', () => setSpeed(i)));
   $('middle').addEventListener('scroll', updateMore);
   // Next frame: showing the "More below" button resizes #middle, which inside the callback is a ResizeObserver loop.
   if (window.ResizeObserver) new ResizeObserver(() => requestAnimationFrame(updateMore)).observe($('middle'));
@@ -519,12 +615,12 @@
       if (which === 'busy') onStatus({ state: 'thinking', effort: 'high' });
     } else if (which === 'thinking') {
       setExpanded(true);
-      addLine('you', 'You said: “Why is my computer so slow in the mornings?”');
+      addLine('you', 'Why is my computer so slow in the mornings?', 'said');
       line('Good question. Let me think about that for a moment.');
       onStatus({ state: 'thinking', effort: 'high', detail: 'This one takes a little longer, so I’m checking my answer.' });
     } else if (which === 'looking') {
       setExpanded(true);
-      addLine('you', 'You said: “Help me send Anne Marie the garden photos.”');
+      addLine('you', 'Help me send Anne Marie the garden photos.', 'said');
       line('I’m having a look at your screen so I know where things are.');
       onStatus({ state: 'looking', step: 1, totalSteps: 5, plan: PLAN.map((p, i) => ({ text: p.text, state: i ? 'next' : 'now' })) });
     } else if (which === 'plan') {
@@ -533,7 +629,7 @@
       onStatus({ state: 'acting', step: 3, totalSteps: 5, label: 'Clicking “Attach file”', detail: 'That adds your photos to the email.', plan: PLAN });
     } else if (which === 'running') {
       setExpanded(true);
-      addLine('you', 'You said: “My computer is so slow.”');
+      addLine('you', 'My computer is so slow.', 'said');
       line('I’ll run a few checks. They only look; they don’t change anything.');
       onStatus({ state: 'running', label: 'Checking how busy your computer is', detail: 'This only looks. It changes nothing.', step: 2, totalSteps: 4,
         plan: [{ text: 'Check memory and disk', state: 'done' }, { text: 'See what is running', state: 'now' }, { text: 'Look at start-up programs', state: 'next' }, { text: 'Tell you what I found', state: 'next' }] });
@@ -541,7 +637,7 @@
       setExpanded(true);
       line('I can help with that. It’s 5 steps: open your photos, pick them, save them, write the email, and send.');
       if (which === 'chat') {
-        addLine('you', 'You said: “I want to send Anne Marie some photos from my iCloud.”');
+        addLine('you', 'I want to send Anne Marie some photos from my iCloud.', 'said');
         line('Step 2 of 5. I’m clicking the blue “New mail” button, top left — that starts a new email.');
         onStatus({ state: 'acting', step: 2, totalSteps: 5 });
       } else if (which === 'choice') {

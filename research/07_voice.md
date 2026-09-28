@@ -3,8 +3,11 @@
 ## Verdict
 
 **Ship Microsoft MAI-Voice-2 with the voice "Ethan" (`en-US-Ethan:MAI-Voice-2`) through OpenRouter.**
-Use one request per sentence. Pass the existing `speechRate` setting (0.9 = Normal) straight through as the
-model's `speed`. Use no style tag.
+Group consecutive sentences into requests of up to 220 characters (was one per sentence). Pass the existing `speechRate` setting (0.9 = Normal) straight through as the
+model's `speed`. Style (updated 2026-09-28, owner asked for more enthusiasm): 'happy' via
+`provider.options.azure.style` on Ethan/Harper, speed x0.8 because styles speed Ethan up about 20-25% (measured
+2026-09-27: plain 158 wpm, happy 197, excited 186); calm lines (scam, refusal, failure, password) stay plain;
+samples in G:/seniorhelper/voice-samples/mai_*.wav; re-measure the pace after the OpenRouter top-up.
 
 Why this one:
 

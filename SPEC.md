@@ -131,33 +131,54 @@ Main → renderer events (channel: payload):
 - `say`: `{text, speak:true}` — caption + TTS
 - `status`: `{state:"idle"|"listening"|"thinking"|"looking"|"acting"|"running"|"waiting"|"speaking", label?, detail?,
   step?, totalSteps?, plan?:[{text, state:"done"|"now"|"next"}], effort?:"low"|"high"}` (rendered by `ui/status.js`)
-- `ask`: `{requestId, question, choices:[str], kind:"choice"|"text"|"confirm"|"done", details?}`
-  (details for confirm: `{title, fields:[{label,value}]}` e.g. email To/Subject/Body/Attachments)
+- `ask`: `{requestId, question, choices:[str], kind:"choice"|"text"|"confirm"|"done", details?, sayId}`
+  (details for confirm: `{title, fields:[{label,value}]}` e.g. email To/Subject/Body/Attachments; `sayId` = the
+  id of the `say` line that speaks the question, so the widget knows when it has been said to the end)
 - `ask-cancel`: `{requestId}`
 - `overlay` (overlay window only): `{type:"highlight", rect:[x,y,w,h] (DIP), label, arrow:true}` |
   `{type:"warning", title, body, level:"scam"|"info"}` | `{type:"clear"}`
 - `lesson-saved`: `{id,title}`; `settings-changed`: settings; `task-done`: `{summary}`
 
 ## Agent loop (src/agent.js)
-- `runTask(utterance, {mode})`, modes: `together` (default: helper does routine clicks, the person
-  does personal choices + final send), `teach` (person does every click; helper highlights),
-  `do` (helper does everything except irreversible final actions, which always need the person).
+- `runTask(utterance, {mode})`, modes: `do` (default, shown as "Auto": helper does everything except
+  irreversible final actions, which need the person), `together` (the helper does the clicks and typing; the
+  person does only passwords/codes, personal choices and the final button), `teach` (person does every click;
+  helper highlights). A missing or invalid mode falls back to `do`; `update_settings` accepts "auto".
+- The system prompt is static per mode (byte-identical between tasks). The person's facts, memory, recipes,
+  lesson and the time go in the first user message, so the provider can reuse its cache. The prompt tells the
+  helper to act first, take the shortest path, ask only what it cannot find out, and never repeat the task back.
+- Thinking policy: step 1 high; after that, once any step goes high, the rest of the task stays high and Jev is
+  not asked again (research/08 #1). Each brain call logs `[llm] mode effort N in, N cached, N out, provider`
+  (numbers only). handle() sets status `{state:'thinking', label:'One moment…'}` as soon as the person is heard.
 - Each step: observe = foreground window + `elements` (compact text list `[id] role "name" (x,y,w,h)`)
   + screenshot (maxWidth 1280, jpeg/png as data URL) + list of open windows + memory facts + task
   transcript so far. Send to brain model with tools. Execute returned tool calls in order.
   Max 40 steps, per-task cost cap (settings, default $0.25), timeout 15 min, Stop button aborts.
-- Every action tool carries `explain` (one short plain sentence, e.g. "I'm clicking the blue
-  Compose button at the top left — that starts a new email."). It is spoken + captioned BEFORE the
-  action, recorded into the lesson.
+- Every action tool carries `explain` (one short sentence, about 15 words: what and where, why only when not
+  obvious; never repeats the task). The caption and ring show first, and the action waits at most 1.2 s (0.6 s
+  with no ring) for the voice, which keeps playing while acting. Recorded into the lesson.
 - Tools: `click{element_id|x,y, double?, explain}`, `type_text{text, explain}`,
   `press_keys{keys, explain}`, `scroll{direction, amount, explain}`, `open{target, explain}`,
   `wait{seconds}`, `say{text}` (findings / what changed, no question), `ask_user{question, choices?}`, `guide_user{element_id|x,y,w,h, instruction,
   wait_for:"click"|"done"}` (overlay highlight → wait for the person's real click or "I did it"),
   `confirm{title, fields[], question}` (big card, Yes/No; REQUIRED before anything that sends,
-  buys, deletes, posts, or changes settings), `remember{fact}`, `run_check{name}`,
-  `apply_fix{name, arg?, explain}`, `done{summary, lesson_title}`.
+  buys, deletes, posts, or changes settings), `remember{fact}`, `save_contact{name, email?, phone?, relation?}`
+  (adds a contact the person dictated, marked `added:'voice'`; never overwrites a Settings contact; refused in a
+  scam episode; not in support mode), `run_command{command, explain}` (read-only lookups run silently with no
+  card and no voice, status "Checking your computer…"; a change shows a plain-words question, with the exact command on the card under
+  "For family: the exact command"; a Get-/Test-/winget list lookup the parser cannot prove read-only is not run
+  and returns "NOT RUN" so the brain rewrites it, never a card; the safety diary keeps the command), `run_check{name}`, `apply_fix{name, arg?, explain}`,
+  `done{summary, lesson_title}`.
 - Guardian gate before each action (see below); `refuse` → speak why + stop; `confirm` → confirm card.
-- The person always presses Send/Buy/Submit themselves (agent uses `guide_user` for that click).
+- The person presses Send/Buy/Submit themselves (the agent uses `guide_user`). The one exception: an email's own
+  Send button in the person's own mail program (Gmail/Outlook/Yahoo/AOL title or the Outlook process, and the
+  configured provider; not any page titled "mail"), when the person's original request said to send it ("...and
+  just send it", "send it right away", "send it to Anne without asking me"; not "and send it", "please send ...",
+  "you can send them ..." or a bare "without asking me"; "after I read it" / "let me check" cancel it). Every
+  address typed or opened this task must be one the person said or the family entered (Settings contact, family
+  helper, their own address; a voice-saved contact does not count), else the card. The spoken explain naming the
+  recipient is said to the end before the click. Never in a scam episode, during remote control or in teach mode;
+  Jev can still refuse, and if Jev is down or refuses with low confidence the review card is shown.
 - Lesson = `{id,title,created,utterance,steps:[{text, action, target}]}`; after `done` the brain
   rewrites steps into 3–10 big-print numbered instructions.
 
@@ -297,3 +318,37 @@ Native `windows`/`foreground` results include `pid` so we can skip our own windo
   guard), `helper.deleteEverything()` -> public settings (removes lessons, memory.json, the diary, stats, logs;
   resets every setting except the connection key).
 - No spoken greeting at startup (the collapsed pill cannot caption it; UX rule 7). The launcher greets on screen.
+
+### Voice, speed and setup (2026-09-28 owner change list)
+- `say` payload gains `again` (Say it again: no second caption, 0.05 slower, nothing to the launcher).
+  `helper.sayLine(text, {again})` -> ipc `say-line` -> `ui.say(text, {wait:false})`: the widget's own spoken
+  lines and Say it again use the natural voice (without the bridge the widget falls back to the Windows voice).
+- Auto-listen (`settings.autoListen`, default true): once a `choice`/`text` question (never confirm/done) has been
+  spoken to the end (`ask.sayId`), the mic opens by itself. Never for main's own questions (`ask.noAutoMic`: close
+  the scam page, quit Barnaby), so a scam page's voice or a TV cannot answer them or start a request. Never when muted, in the demo, already listening or
+  talking, or when the line was hushed. An auto mic that hears nothing closes quietly after 8 s; a button click
+  or a closed question cancels it (a recording made for a question that is gone is dropped, even mid-transcription);
+  a new Barnaby line or Say it again closes an auto mic nobody has spoken into.
+- VAD end of speech: 1.0 s for a choice question, 1.4 s for a text answer, 1.3 s for an open request (was 1.6 s).
+- Instant feedback: quiet earcons (`open` 440 Hz when the mic opens, `heard` 392+523 Hz when speech ends; at most
+  0.25 s; skipped when muted/demo); a "You said" bubble appears at once ("Writing down what you said…") and is
+  filled in by STT; the card shows "Thinking" as soon as anything is sent; main says "One moment." once if
+  nothing was said 2.5 s after the person was heard.
+- The "You said/typed/chose" bubble: right-aligned, person icon, 28 px upright text, no quotes; it stays just
+  above Barnaby's answer.
+- Big thinking sign: three animated dots + "Please wait…" inside the status card whenever busy and no question
+  or mic is open (a cancelled auto mic keeps it). 34 px dots, text at --fs-h3. Deviates from 02_ux 2.4 at the owner's request (opacity 0.35-1, 8 px rise, 1.6 s period); off
+  under reduced motion.
+- Widget speed row (docked panel only; hidden when muted, asking or floating; big text shows it without its label): Slower / Normal / Faster
+  = speechRate 0.8 / 0.9 / 1.0, the same steps as Settings (`SPEEDS` in ui/settings.js; test/setup.test.js checks
+  they match). Voice commands may still set 0.7-1.1, shown as the nearest step.
+- TTS (src/tts.js): consecutive sentences grouped into requests of up to 220 characters ("Step N of M." alone,
+  600 ms after it); 80 ms tail trim; the Flash model gets the -Flash voice id. `settings.ttsStyle` (default
+  'happy', 'none' = plain) is sent as `provider.options.azure.style` on Ethan/Harper only, with speed = rate x 0.8;
+  scam/refusal/failure/password lines stay plain. `[tts] first N ms` logs latency, never words.
+- Settings additions: `family.email` (optional); the setup wizard picks the family helper from the contacts.
+  Family changes made before `setupDone` apply at once; after setup they wait 24 h (LOCKED: name, phone, email,
+  ntfyTopic, alertConsent). Contacts keep extra keys (`added:'voice'`); the guardian never trusts a voice-added
+  contact for money (R5), dialling (R6), showing numbers or the Send exception's recipient; a family edit of that
+  contact in Settings removes the flag. `settingsVersion` 2: a file saved before v2 with mode
+  'together' moves to 'do' once.

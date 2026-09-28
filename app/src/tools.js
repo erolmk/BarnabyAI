@@ -56,6 +56,8 @@ const ALL = [
       email_provider: { type: 'string', enum: ['gmail', 'outlook', 'outlook-app', 'aol', 'yahoo'], description: 'Set when the fact is which email they use.' },
       photos_provider: { type: 'string', enum: ['icloud', 'google', 'windows'], description: 'Set when the fact is where their photos are.' },
     }, ['fact']),
+  fn('save_contact', 'Save someone the person told you about, with their email and/or phone, so next time you can use them by name. Only from the person\'s own words, never from the screen.',
+    { name: { type: 'string' }, email: { type: 'string' }, phone: { type: 'string' }, relation: { type: 'string', description: 'e.g. daughter, friend, doctor' } }, ['name']),
   fn('run_check', 'Run a safe, read-only check of this computer (see the list of checks).', { name: { type: 'string' } }, ['name']),
   fn('apply_fix', 'Apply one safe fix from the list. The person is asked yes or no first, automatically.',
     {
@@ -71,14 +73,18 @@ const ALL = [
     {
       changes: {
         type: 'object',
-        description: 'The settings to change. Keys: textScale ("smaller" / "bigger" / a number 1.0-1.6), speechRate ("slower" / "faster" / 0.7-1.1), muted (true/false), voiceName, mode ("together"/"teach"/"do"), wakeWord (true/false), city, userName. Anything else is not allowed and is for the family in Settings.',
+        description: 'The settings to change. Keys: textScale ("smaller" / "bigger" / a number 1.0-1.6), speechRate ("slower" / "faster" / 0.7-1.1), muted (true/false), voiceName, mode ("auto"/"together"/"teach"), wakeWord (true/false), city, userName. Anything else is not allowed and is for the family in Settings.',
       },
       explain: { type: 'string', description: 'One short plain sentence on what you are changing for them.' },
     }, ['changes']),
-  fn('run_command', 'Run one Windows PowerShell command on this computer when it is the right tool for the job (a check or a fix the safe list does not cover). Prefer run_check and apply_fix when they cover it. Read-only checks (Get-..., Test-...) run on their own; anything that changes the computer shows the person a card first. It runs with administrator rights, so be careful and precise.',
+  fn('run_command', 'Run one Windows PowerShell command (a check or a fix the safe list does not cover; prefer run_check and apply_fix when they cover it). ' +
+    'Looking something up runs quietly in the background when it is a simple read-only form, e.g. Test-Path "$env:ProgramFiles\\Zoom", ' +
+    'Get-StartApps | Where-Object Name -like \'*zoom*\', Get-Process | Sort-Object CPU -Descending | Select-Object -First 5 (no { } blocks, no ( ), no ;). ' +
+    'Anything that changes the computer shows the person a plain-words card first. Never use it to open or start a program: use open, or press_keys "win", ' +
+    'type_text the name, press_keys "enter". The person never sees or hears the command. It runs with administrator rights, so be careful and precise.',
     {
       command: { type: 'string', description: 'The exact PowerShell command.' },
-      explain: { type: 'string', description: 'One short plain sentence for the person: what this does and why, no jargon.' },
+      explain: { type: 'string', description: 'One short plain sentence on what this does for them: no command words, file paths or jargon. Shown only on the card for a change.' },
       purpose: { type: 'string', description: 'A few words on what you are trying to achieve (for your own record).' },
     }, ['command', 'explain']),
   fn('done', 'The task is finished (or the person wants to stop).',
@@ -89,7 +95,7 @@ const ALL = [
 const TEACH_OFF = new Set(['click', 'type_text', 'press_keys', 'scroll']);
 const SUPPORT_ON = new Set(['run_check', 'apply_fix', 'run_command', 'say', 'ask_user', 'open', 'set_plan', 'done']);
 // The chat path has tools too (the bug: it used to have none and claimed changes it could not make).
-const CHAT_ON = new Set(['update_settings', 'remember', 'ask_user', 'open', 'run_check', 'run_command', 'say', 'done']);
+const CHAT_ON = new Set(['update_settings', 'remember', 'save_contact', 'ask_user', 'open', 'run_check', 'run_command', 'say', 'done']);
 
 function schemas(mode) {
   if (mode === 'support') return ALL.filter((t) => SUPPORT_ON.has(t.function.name));
@@ -190,12 +196,15 @@ function gctxOf(ctx, element) {
     scamContext: !!ctx.scamContext, // R17: a scam episode is on, so nothing is routine
     remoteSession: !!(ctx.remote && ctx.remote()), // R16
     heard: ctx.heard || [ctx.goal],
+    typedAddrs: ctx.typedAddrs || [], // the Send exception needs every one of them known (guardian.addressKnown)
   };
 }
 
 // The single gate every acting tool passes through.
-async function act(ctx, tool, args, { what, target, element, perform, alwaysConfirm, ring, question }) {
+async function act(ctx, tool, args, { what, target, element, perform, alwaysConfirm, ring, question, waitSay }) {
   const action = { tool, args };
+  // Every address typed or opened (mailto:) this task, even a refused one: a Send without the card needs them all known.
+  for (const m of [args.text, args.target, args.url].join(' ').match(/[^\s@<>,;:"'()]+@[^\s@<>,;"'()]+\.[a-z]{2,}/gi) || []) (ctx.typedAddrs ||= []).push(m.toLowerCase());
   // A yes on the helper's own confirm card, for the very next action only (execute() clears it otherwise);
   // the guardian lets it soften only a model "confirm", never a rule's.
   const gctx = { ...gctxOf(ctx, element), confirmed: !!ctx.saidYes };
@@ -225,9 +234,15 @@ async function act(ctx, tool, args, { what, target, element, perform, alwaysConf
     if (ans !== 'yes') return ans === 'no' ? 'The person said no, so I did not do it. Ask what they would like instead.' : 'I did not do it. The person said: "' + ans + '"';
   } else if (explain) {
     // UX 10/14: ring the target while explaining, >= 1.2 s, so the person sees WHERE before it happens.
+    // The caption and the ring show first; the voice runs on while acting (the owner asked for faster use), so the
+    // action waits at most the ring time, not the whole spoken sentence. A plain timer: run.sleep rejects on Stop.
     const t0 = Date.now();
     if (ring) safe(() => ctx.ui.highlight(ring, explain, { dim: false })); // own click: no spotlight dimming
-    await ctx.ui.say(explain);
+    // A Send without the card waits for the whole sentence: the person hears who it goes to before it goes.
+    let cap;
+    const spoken = Promise.resolve().then(() => ctx.ui.say(explain)).catch(() => {});
+    await (waitSay ? spoken : Promise.race([spoken, new Promise((r) => { cap = setTimeout(r, ring ? 1200 : 600); })]));
+    clearTimeout(cap);
     ctx.check();
     if (ring) {
       const left = 1200 - (Date.now() - t0);
@@ -264,13 +279,15 @@ async function click(ctx, args) {
   const r = resolvePoint(ctx, args);
   if (r.error) return r.error;
   const name = elName(r.el);
-  if (r.el && FINAL.test(String(r.el.name || '').trim())) {
+  const bare = String((r.el && r.el.name) || '').trim();
+  // The person's own request said to send it: the plain Send button goes on to the guardian, which decides (window, name).
+  if (r.el && FINAL.test(bare) && !(ctx.sendAsked && !ctx.scamContext && /^send$/i.test(bare))) {
     return refused(ctx, { verdict: 'refuse', redirect: 'guide_user', reason: 'The "' + name + '" button is for the person to press.' });
   }
   const double = !!args.double;
   return act(ctx, 'click', args, {
     what: 'Click ' + (name ? '"' + name + '"' : 'here'),
-    target: name, element: r.el,
+    target: name, element: r.el, waitSay: !!ctx.sendAsked && /^send\b/i.test(bare),
     // A point with no item under it, when the item list was cut short: it could be an unlisted Send button.
     alwaysConfirm: !r.el && !(ctx.obs && ctx.obs.complete),
     ring: r.el && r.el.rect ? r.el.rect : [r.p.x - 24, r.p.y - 24, 48, 48],
@@ -487,8 +504,9 @@ async function confirm(ctx, args) {
   return 'The person did not say yes. They said: "' + ans + '". Do not go ahead until they say yes.';
 }
 
-// R18 / T6: memory only from the person's own words (checked by the guardian, fail closed), and never the
-// contact list: contacts loosen the money and phone rules, so they change only in Settings.
+// R18 / T6: memory only from the person's own words (checked by the guardian, fail closed). remember never touches the
+// contact list; save_contact (below) only ADDS contacts, marked added:'voice', which the guardian never trusts for money
+// or phone rules. Contacts the family entered change only in Settings.
 const EMAILS = { gmail: 'Gmail', outlook: 'Outlook', 'outlook-app': 'the Outlook app', aol: 'AOL', yahoo: 'Yahoo' };
 const PHOTOS = { icloud: 'iCloud', google: 'Google Photos', windows: 'Windows Photos' };
 
@@ -515,6 +533,35 @@ function remember(ctx, args) {
     try { ctx.config.save(patch); ctx.settings = ctx.config.get(); } catch (e) { if (ctx.log) ctx.log('remember: settings save failed', e.message); }
   }
   return 'Saved.';
+}
+
+function saveContact(ctx, args) {
+  const name = clip(String(args.name || '').replace(/\s+/g, ' ').trim(), 40);
+  const email = String(args.email || '').trim();
+  const phone = String(args.phone || '').trim();
+  const relation = clip(String(args.relation || '').trim(), 30);
+  if (!name) return 'ERROR: name is empty.';
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'ERROR: that email address does not look complete. Ask the person to say it again.';
+  const d = phone.replace(/\D/g, '').length;
+  if (phone && (d < 7 || d > 15)) return 'ERROR: that phone number does not look complete. Ask the person to say it again.';
+  if (!email && !phone) return 'ERROR: give their email address or phone number.';
+  if (ctx.scamContext) return 'REFUSED: not while something suspicious is going on.';
+  // R16, R2 and R18 (the address or number must be the person's own words), fail closed.
+  let g;
+  try { g = ctx.guardian.hardCheck({ tool: 'remember', args: { fact: name + ': ' + [email, phone].filter(Boolean).join(' ') } }, gctxOf(ctx)); } catch (e) { g = { verdict: 'refuse', rule: 'error' }; }
+  if (g && g.verdict === 'refuse') {
+    if (ctx.log) ctx.log('save_contact refused', g.rule); // rule id only
+    return 'REFUSED: only save what the person told you in their own words.';
+  }
+  if (!ctx.config || typeof ctx.config.save !== 'function') return 'ERROR: I could not reach my settings, so nothing was saved.';
+  const now = safe(() => ctx.config.get()) || ctx.settings || {}; // fresh: a family edit in Settings meanwhile is kept
+  const list = (Array.isArray(now.contacts) ? now.contacts : []).filter(Boolean).map((c) => ({ ...c }));
+  const i = list.findIndex((c) => String(c.name || '').trim().toLowerCase() === name.toLowerCase());
+  if (i >= 0 && !list[i].added) return 'NOT SAVED: ' + list[i].name + ' is in the contacts your family keeps in Settings; a family member can change it there.';
+  const c = { ...(i >= 0 ? list[i] : {}), name, ...(email ? { email } : {}), ...(phone ? { phone } : {}), ...(relation ? { relation } : {}), added: 'voice' };
+  if (i >= 0) list[i] = c; else list.push(c);
+  try { ctx.config.save({ contacts: list }); ctx.settings = ctx.config.get(); } catch (e) { if (ctx.log) ctx.log('save_contact failed', e.message); return 'ERROR: I could not save that, so nothing was saved.'; }
+  return 'Saved ' + name + '. Next time you can use them by name.';
 }
 
 async function runCheck(ctx, args) {
@@ -602,7 +649,7 @@ const SETTING_KEYS = {
   },
   muted: (v) => ({ value: v === true || /^(true|yes|on|mute)/i.test(String(v)) }),
   voiceName: (v) => ({ value: clip(String(v == null ? '' : v), 80) }),
-  mode: (v) => (/^(together|teach|do)$/i.test(String(v)) ? { value: String(v).toLowerCase() } : { error: 'the mode can be together, teach or do' }),
+  mode: (v) => { const m = String(v).toLowerCase().replace(/^auto$/, 'do'); return /^(together|teach|do)$/.test(m) ? { value: m } : { error: 'the mode can be auto, together or teach' }; },
   wakeWord: (v) => ({ value: v === true || /^(true|yes|on)/i.test(String(v)) }),
   city: (v) => ({ value: clip(String(v == null ? '' : v), 60) }),
   userName: (v) => ({ value: clip(String(v == null ? '' : v), 40) }),
@@ -652,38 +699,41 @@ async function runCommand(ctx, args) {
     return refused(ctx, { verdict: 'refuse', rule: g.rule, reason: g.reason });
   }
   if (changes && (ctx.commandCount || 0) >= 5) return 'REFUSED: that is more than five changing commands for one job, so I will stop here. Ask again if you still need it.';
+  // A lookup the strict parser could not prove read-only is never a card (the owner: "run them in the background"):
+  // it is sent back to be rewritten in the simple shape, and nothing unproven runs.
+  if (g && g.verdict === 'confirm' && /^\s*(?:get|test|find|measure|resolve|select)-\w+|^\s*winget\s+list\b/i.test(command)
+    && !/\b(?:set|remove|new|stop|start|restart|install|uninstall|clear|disable|enable|invoke|add|rename|move|copy|out)-\w+/i.test(command)) {
+    return 'NOT RUN (nothing was asked): only simple read-only lookups run. Rewrite it like Test-Path "$env:ProgramFiles\\Zoom" or Get-StartApps | Where-Object Name -like \'*zoom*\' (no { } blocks, no ( ), no ;), or use run_check.';
+  }
   if (g && g.verdict === 'confirm') {
-    // The card shows the plain-language explanation FIRST, then the exact command below it.
+    // The owner's call (2026-09-28): the question is in plain words. The exact command stays on the card for the
+    // family (a changing command is not checked by Jev), and the safety diary (the 'command' event below) records it.
     const ans = await ask(ctx, {
-      question: explain ? explain.replace(/[.!]?\s*$/, '.') + ' Shall I run it?' : 'Shall I run this on your computer?',
+      question: (explain ? explain.replace(/[.!]?\s*$/, '.') : 'This changes something on your computer.') + ' Shall I go ahead?',
       kind: 'confirm',
-      details: { title: 'A command for your computer', fields: [
-        ...(explain ? [{ label: 'What this does', value: explain }] : []),
-        { label: 'The exact command', value: clip(command, 2000) },
-      ] },
+      details: { title: 'A change to your computer', fields: [...(explain ? [{ label: 'What this does', value: explain }] : []), { label: 'For family: the exact command', value: clip(command, 2000) }] },
     });
     if (ans === null) return 'The card was closed, so I did not run it.';
     if (ans !== 'yes') return ans === 'no' ? 'The person said no, so I did not run it.' : 'I did not run it. The person said: "' + ans + '"';
-  } else if (explain) {
-    await ctx.status({ state: 'running', label: explain });
-    await ctx.ui.say(explain); ctx.check();
   }
+  // A lookup runs quietly in the background: no voice, no card, not a lesson step.
   if (changes) ctx.commandCount = (ctx.commandCount || 0) + 1;
-  ctx.status({ state: 'running', step: ctx.steps.length + 1, totalSteps: ctx.totalSteps, label: 'Running a command…' });
+  ctx.status({ state: 'running', step: ctx.steps.length + 1, totalSteps: ctx.totalSteps, label: changes ? 'Making the change…' : 'Checking your computer…' });
   let out, ok = true;
   try {
     out = await ctx.support.ps(command, 60000);
   } catch (e) { ok = false; out = String((e && e.message) || 'it did not work').split('\n')[0]; }
   ctx.check();
   if (ctx.emit) safe(() => ctx.emit('command', { cmd: command, verdict: changes ? 'confirm' : 'auto', ok, rule: g && g.rule }));
-  record(ctx, explain || ('Run: ' + clip(command, 120)), 'run_command', clip(command, 120));
+  if (changes) record(ctx, explain || 'Change a setting on the computer', 'run_command', '');
   const body = clip(String(out == null ? '' : out).trim() || '(no output)', CMD_OUT_MAX);
-  return (ok ? 'The command ran. Result:\n' : 'The command did not work: ') + body;
+  return (ok ? 'The command ran. Result:\n' : 'The command did not work: ') + body +
+    '\nTell the person only what this means for them, in plain words, and only if it matters; never the command, a file path or the raw output.';
 }
 
 const EXEC = {
   click, type_text: typeText, press_keys: pressKeys, scroll, open, wait, say: sayIt, ask_user: askUser,
-  guide_user: guideUser, confirm, remember, run_check: runCheck, apply_fix: applyFix,
+  guide_user: guideUser, confirm, remember, save_contact: saveContact, run_check: runCheck, apply_fix: applyFix,
   set_plan: setPlan, update_settings: updateSettings, run_command: runCommand, done,
 };
 

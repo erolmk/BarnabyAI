@@ -41,7 +41,7 @@
       allow_fallbacks: true, zdr: true, data_collection: 'deny', require_parameters: true },
     dockPanel: true, allowCommands: true,
     sttModel: 'google/gemini-3.1-flash-lite', jevModel: '~typesafe/jev-latest',
-    ttsVoice: 'en-US-Ethan:MAI-Voice-2', voiceName: '', speechRate: 0.9, muted: false, textScale: 1.0, mode: 'together',
+    ttsVoice: 'en-US-Ethan:MAI-Voice-2', voiceName: '', speechRate: 0.9, muted: false, textScale: 1.0, mode: 'do',
     email: { provider: 'outlook', address: 'rose.kowalski@outlook.com' },
     photos: { provider: 'icloud' },
     video: { provider: 'zoom' },
@@ -49,7 +49,7 @@
       { name: 'Sarah', relation: 'Daughter', email: 'sarah.kowalski@gmail.com', phone: '555-201-4477' },
       { name: 'Anne Marie Kowalski', relation: 'Friend', email: 'annemarie.k@gmail.com', phone: '555-318-9021' },
     ],
-    family: { name: 'Sarah', phone: '555-201-4477', ntfyTopic: 'rose-kowalski-4821' },
+    family: { name: 'Sarah', phone: '555-201-4477', email: 'sarah.kowalski@gmail.com', ntfyTopic: 'rose-kowalski-4821' },
     tiles: ['email', 'photos', 'video', 'internet', 'family', 'lessons', 'scam', 'support', 'games'],
     city: 'Springfield', startAtLogin: true, scamShield: true, taskCostCapUsd: 0.25, maxSteps: 40,
     setupDone: true,
@@ -57,7 +57,7 @@
   if (scenario === 'firstrun') {
     settings = merge(settings, { userName: '', apiKey: '', hasApiKey: false, setupDone: false, city: '',
       email: { provider: '', address: '' }, photos: { provider: '' }, video: { provider: '' },
-      family: { name: '', phone: '', ntfyTopic: '' }, startAtLogin: false });
+      family: { name: '', phone: '', email: '', ntfyTopic: '' }, startAtLogin: false });
     settings.contacts = [];
   }
   const ts = parseFloat(params.get('scale'));

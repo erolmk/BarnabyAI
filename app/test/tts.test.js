@@ -39,19 +39,28 @@ function fakeFetch({ delay = () => 20, status = () => 200 } = {}) {
 }
 test.beforeEach(() => tts._mem.clear());
 
-test('sentences: split like the widget, 600 ms after "Step 2 of 5.", 350 ms between, none after the last', () => {
+// Four sentences of about 120 characters: too long to group, so each is its own request.
+const LONG = [1, 2, 3, 4].map((n) => 'Sentence ' + n + ' is a long one, so it goes to the voice service on its own and is never grouped with the next one at all, ever.');
+
+test('chunks: sentences split like the widget, then grouped up to 220 characters; "Step 2 of 5." alone with 600 ms after it', () => {
   const c = tts.chunks("Step 2 of 5. I'm clicking the blue Compose button. Take your time! Is that right?");
-  assert.deepEqual(c.map((x) => x.text), ['Step 2 of 5.', "I'm clicking the blue Compose button.", 'Take your time!', 'Is that right?']);
-  assert.deepEqual(c.map((x) => x.gapMs), [600, 350, 350, 0]);
+  assert.deepEqual(c.map((x) => x.text), ['Step 2 of 5.', "I'm clicking the blue Compose button. Take your time! Is that right?"]);
+  assert.deepEqual(c.map((x) => x.gapMs), [600, 0]);
+  const hundred = ['a', 'b', 'c'].map((x) => x.repeat(99) + '.');
+  const g = tts.chunks(hundred.join(' '));
+  assert.equal(g.length, 2);
+  assert.ok(g[0].text.length <= 220 && g[0].text === hundred[0] + ' ' + hundred[1], String(g[0].text.length));
+  assert.deepEqual(g.map((x) => x.gapMs), [350, 0]);
+  assert.equal(tts.chunks(LONG.join(' ')).length, 4);
   assert.deepEqual(tts.chunks('Hello there').map((x) => x.text), ['Hello there'], 'no full stop: one sentence');
-  assert.deepEqual(tts.chunks('She said "yes." Then left.').map((x) => x.text), ['She said "yes."', 'Then left.']);
+  assert.deepEqual(tts.chunks('She said "yes." Then left.').map((x) => x.text), ['She said "yes." Then left.'], 'a closing quote stays with its sentence');
   assert.deepEqual(tts.chunks('...'), []);
   assert.deepEqual(tts.chunks(''), []);
 });
 
-test('trim: the model\'s edge silence goes, 30 ms of air stays', () => {
+test('trim: the model\'s edge silence goes, 30 ms of air stays before and 80 ms after (the last consonant\'s tail)', () => {
   const t = tts.trim(Buffer.concat([sil, tone, sil]), RATE);
-  assert.ok(Math.abs(t.length / 2 / RATE - 0.26) < 0.03, String(t.length / 2 / RATE));
+  assert.ok(Math.abs(t.length / 2 / RATE - 0.31) < 0.03, String(t.length / 2 / RATE));
   assert.equal(tts.trim(sil, RATE).length, 0);
 });
 
@@ -74,14 +83,14 @@ test('privacy: a model that is not zero-retention is refused before any request;
 });
 
 test('pipelining: one sentence ahead, requests in order, sentences come out in order even when a later one is faster', async () => {
-  const f = fakeFetch({ delay: (t) => (t === 'One.' ? 60 : 10) });
+  const f = fakeFetch({ delay: (t) => (t === LONG[0] ? 60 : 10) });
   const got = [];
-  for await (const c of tts.speak('One. Two. Three. Four.', { apiKey: 'x', model: M, voice: 'v', fetchImpl: f })) {
-    if (c.seq === 0) assert.deepEqual(f.inputs(), ['One.', 'Two.'], 'the 2nd sentence is in flight while the 1st plays');
+  for await (const c of tts.speak(LONG.join(' '), { apiKey: 'x', model: M, voice: 'v', fetchImpl: f })) {
+    if (c.seq === 0) assert.deepEqual(f.inputs(), LONG.slice(0, 2), 'the 2nd sentence is in flight while the 1st plays');
     got.push([c.seq, c.gapMs, c.last, c.rate]);
   }
   assert.deepEqual(got, [[0, 350, false, 24000], [1, 350, false, 24000], [2, 350, false, 24000], [3, 0, true, 24000]]);
-  assert.deepEqual(f.inputs(), ['One.', 'Two.', 'Three.', 'Four.']);
+  assert.deepEqual(f.inputs(), LONG);
   assert.ok(f.maxInFlight <= 2, 'never more than the playing sentence and the next: ' + f.maxInFlight);
 });
 
@@ -90,16 +99,16 @@ test('cancel: Stop / Talk / the ack aborts the job; nothing more is sent or requ
   const sent = [];
   // main forwards each sentence as soon as it is made; the widget's ack for line 7 comes with the first one
   const sp = tts.createSpeaker({ send: (m) => { sent.push(m); if (m.id === 7) sp.cancel(7); }, fetchImpl: f });
-  const plan = sp.plan(S, 'One. Two. Three. Four.');
-  await sp.run(7, 'One. Two. Three. Four.', plan);
+  const plan = sp.plan(S, LONG.join(' '));
+  await sp.run(7, LONG.join(' '), plan);
   await wait(60);
-  assert.deepEqual(f.inputs(), ['One.', 'Two.'], 'the sentence sent and the one in flight; nothing after the cancel');
+  assert.deepEqual(f.inputs(), LONG.slice(0, 2), 'the sentence sent and the one in flight; nothing after the cancel');
   assert.deepEqual(sent.map((m) => m.seq), [0]);
   assert.equal(f.inFlight, 0, 'the request in flight was aborted too');
   assert.ok(sent.every((m) => !m.error), 'a cancel is not a failure: the Windows voice does not take over');
   assert.equal(sp.downUntil, 0);
   // cancelAll (Stop): every line in flight
-  const a = sp.run(8, 'Alpha. Beta.', plan), b = sp.run(9, 'Gamma. Delta.', plan);
+  const a = sp.run(8, LONG.slice(0, 2).join(' '), plan), b = sp.run(9, LONG.slice(2).join(' '), plan);
   sp.cancelAll();
   await Promise.all([a, b]);
   assert.ok(!sent.some((m) => m.id === 8 || m.id === 9), 'nothing sent for cancelled lines');
@@ -107,16 +116,18 @@ test('cancel: Stop / Talk / the ack aborts the job; nothing more is sent or requ
 
 test('fallback: a failure hands the rest of the line to the Windows voice and keeps it for 5 minutes', async () => {
   let now = 1e12;
-  const f = fakeFetch({ status: (t) => (t === 'Two.' ? 500 : 200) });
+  const line = LONG.slice(0, 3).join(' ');
+  const f = fakeFetch({ status: (t) => (t === LONG[1] ? 500 : 200) });
   const sent = [], logs = [], problems = [];
   const sp = tts.createSpeaker({ send: (m) => sent.push(m), log: (...a) => logs.push(a.join(' ')), onProblem: (k) => problems.push(k), fetchImpl: f, now: () => now });
-  await sp.run(1, 'One. Two. Three.', sp.plan(S, 'One. Two. Three.'));
+  await sp.run(1, line, sp.plan(S, line));
   assert.deepEqual(sent.map((m) => (m.error ? 'error:' + m.error : m.seq)), [0, 'error:other']);
-  assert.equal(sent[1].rest, 'Two. Three.', 'the sentences not yet played');
-  assert.equal(f.inputs().filter((x) => x === 'Two.').length, 2, 'one retry on a 5xx');
+  assert.equal(sent[1].rest, LONG[1] + ' ' + LONG[2], 'the sentences not yet played');
+  assert.equal(f.inputs().filter((x) => x === LONG[1]).length, 2, 'one retry on a 5xx');
   assert.deepEqual(problems, ['other']);
-  assert.equal(logs.length, 1);
-  assert.ok(!/One|Two|Three/.test(logs[0]) && /16 chars/.test(logs[0]), 'the log has the length, never the words: ' + logs[0]);
+  assert.equal(logs.filter((l) => /failed/.test(l)).length, 1);
+  assert.ok(logs.some((l) => /^\[tts\] first \d+ ms/.test(l)), 'the first chunk\'s latency is logged');
+  assert.ok(logs.every((l) => !/Sentence|long one/.test(l)) && logs.every((l) => l.includes(line.length + ' chars')), 'the log has the length, never the words: ' + logs);
   assert.equal(sp.downUntil, now + tts.COOLDOWN_MS);
   assert.equal(sp.plan(S, 'Hello.'), null, 'the Windows voice for the next 5 minutes');
   now += tts.COOLDOWN_MS - 1;
@@ -139,7 +150,7 @@ test('fallback: a hung voice service gets the Windows voice after the timeout, w
   const t0 = Date.now();
   await sp.run(3, 'Hello there. Bye.', { ...sp.plan(S, 'Hello there. Bye.'), timeoutMs: 50 });
   assert.ok(Date.now() - t0 < 1000);
-  assert.equal(f.calls.filter((c) => c.body.input === 'Hello there.').length, 1, 'no retry after a timeout');
+  assert.equal(f.calls.filter((c) => c.body.input === 'Hello there. Bye.').length, 1, 'no retry after a timeout (a short line is one request)');
   assert.deepEqual(sent, [{ id: 3, error: 'timeout', rest: 'Hello there. Bye.' }]);
 });
 
@@ -176,11 +187,33 @@ test('muted (and HELPER_MUTE=1) means no request at all; so do the computer\'s o
 
 test('plan: Ethan by default, the chosen voice, speed = speechRate (clamped), the MAI model', () => {
   const p = tts.pick(S, 'Hello.');
-  assert.deepEqual(p, { apiKey: 'k', model: M, voice: 'en-US-Ethan:MAI-Voice-2', speed: 0.9 });
+  assert.deepEqual(p, { apiKey: 'k', model: M, voice: 'en-US-Ethan:MAI-Voice-2', speed: 0.72, style: 'happy' });
+  const plain = { ...S, ttsStyle: 'none' };
+  assert.deepEqual(tts.pick(plain, 'Hello.'), { apiKey: 'k', model: M, voice: 'en-US-Ethan:MAI-Voice-2', speed: 0.9, style: '' });
   assert.equal(tts.pick({ ...S, ttsVoice: 'en-US-Harper:MAI-Voice-2' }, 'Hi.').voice, 'en-US-Harper:MAI-Voice-2');
   assert.equal(tts.pick({ ...S, ttsVoice: 'en-US-Nobody' }, 'Hi.').voice, 'en-US-Ethan:MAI-Voice-2', 'unknown voice: Ethan');
-  assert.deepEqual([0.8, 1.0, 0.3, 5, undefined].map((r) => tts.pick({ ...S, speechRate: r }, 'Hi.').speed), [0.8, 1.0, 0.7, 1.2, 0.9]);
-  assert.equal(tts.pick({ ...S, ttsModel: 'microsoft/mai-voice-2-flash' }, 'Hi.').model, 'microsoft/mai-voice-2-flash');
+  assert.deepEqual([0.8, 1.0, 0.3, 5, undefined].map((r) => tts.pick({ ...plain, speechRate: r }, 'Hi.').speed), [0.8, 1.0, 0.7, 1.2, 0.9]);
+  const flash = tts.pick({ ...S, ttsModel: 'microsoft/mai-voice-2-flash' }, 'Hi.');
+  assert.deepEqual([flash.model, flash.voice], ['microsoft/mai-voice-2-flash', 'en-US-Ethan:MAI-Voice-2-Flash'], 'the Flash model gets the -Flash voice id');
+});
+
+test('style: warm ("happy") and a little slower on Ethan and Harper; calm for bad news, scams and refusals; off with ttsStyle none', async () => {
+  assert.deepEqual([tts.pick(S, 'Great, I found it.').style, tts.pick(S, 'Great, I found it.').speed], ['happy', 0.72]);
+  for (const t of ['This looks like a scam.', 'Sorry, I couldn’t find it.', 'Okay, I stopped.', 'I can’t do payments.', 'Please type your password.']) {
+    assert.deepEqual([tts.pick(S, t).style, tts.pick(S, t).speed], ['', 0.9], t);
+  }
+  assert.equal(tts.pick({ ...S, ttsVoice: 'en-US-Grant:MAI-Voice-2' }, 'Great.').style, '', 'Grant has no styles');
+  assert.equal(tts.pick({ ...S, ttsVoice: 'en-US-Harper:MAI-Voice-2' }, 'Great.').style, 'happy');
+  assert.equal(tts.pick({ ...S, ttsStyle: 'none' }, 'Great.').style, '');
+  assert.equal(tts.pick({ ...S, ttsStyle: 'excited' }, 'Great.').style, 'excited');
+  // on the wire: the style rides on the same zero-retention provider block; the cache keeps styles apart
+  const f = fakeFetch();
+  await tts.synth('Great.', { apiKey: 'x', model: M, voice: tts.VOICES[0], style: 'happy', fetchImpl: f });
+  assert.deepEqual(f.calls[0].body.provider, { zdr: true, data_collection: 'deny', options: { azure: { style: 'happy' } } });
+  const o = { apiKey: 'x', model: M, voice: 'v', fetchImpl: f };
+  for await (const _ of tts.speak('Well done.', o)) { /* drain */ }
+  for await (const _ of tts.speak('Well done.', { ...o, style: 'happy' })) { /* drain */ }
+  assert.equal(f.calls.length, 3, 'the same words with and without a style are two recordings');
 });
 
 test('cache: a repeated line makes no request (memory only, 64 sentences)', async () => {

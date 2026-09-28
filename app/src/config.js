@@ -20,14 +20,16 @@ const DEFAULTS = {
   voiceName: '',
   speechRate: 0.9,
   muted: false,
+  autoListen: true, // the mic opens by itself after a choice/text question is said (never confirm, never muted)
+  ttsStyle: 'happy', // Azure speaking style on Ethan/Harper; 'none' = plain
   textScale: 1.0,
-  mode: 'together', // together | teach | do
+  mode: 'do', // do (shown as "Auto", the default) | together | teach
   email: { provider: '', address: '' }, // gmail | outlook | aol | yahoo | outlook-app
   photos: { provider: '' }, // icloud | google | windows
   video: { provider: '' }, // zoom | whatsapp | facebook | teams
   contacts: [], // [{name, email, phone, relation}]
   // alertConsent: 'just_me' (nothing goes to anyone) | 'tell_family' (scam alerts to the ntfy topic).
-  family: { name: '', phone: '', ntfyTopic: '', alertConsent: 'just_me', weeklyNote: false },
+  family: { name: '', phone: '', email: '', ntfyTopic: '', alertConsent: 'just_me', weeklyNote: false },
   tiles: ['email', 'photos', 'video', 'internet', 'family', 'lessons', 'scam', 'support', 'games'],
   city: '',
   startAtLogin: false,
@@ -38,6 +40,7 @@ const DEFAULTS = {
   taskCostCapUsd: 0.25,
   maxSteps: 40,
   setupDone: false,
+  settingsVersion: 2, // one-time moves below run only for files saved before this number
 };
 
 // Old default -> dropped on load, so the current default applies.
@@ -77,6 +80,8 @@ class Config extends EventEmitter {
     }
     // Values that were only ever our old defaults move to the new defaults (a saved file holds every key).
     for (const [k, was] of Object.entries(RETIRED)) if (saved[k] === was) delete saved[k];
+    // v2: Auto is the default. Only once (a file without the number is older), so a family's later "together" stays.
+    if (!saved.settingsVersion && saved.mode === 'together') delete saved.mode;
     this.data = merge(DEFAULTS, saved);
   }
   get() {
