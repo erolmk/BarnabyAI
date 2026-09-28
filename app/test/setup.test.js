@@ -31,7 +31,7 @@ test('config: "Show me how" (teach) is the default, v3 resets mode and autoListe
   assert.strictEqual(c.get().mode, 'teach');
   assert.strictEqual(c.get().autoListen, false, 'hold to talk; the mic does not open by itself');
   assert.strictEqual(c.get().keepTranscript, false, 'no transcript unless the family turns it on');
-  assert.strictEqual(c.get().settingsVersion, 3);
+  assert.strictEqual(c.get().settingsVersion, 4);
   assert.strictEqual(c.get().ttsStyle, 'happy');
   assert.strictEqual(c.get().family.email, '');
   const old = tmpDir();
@@ -43,18 +43,35 @@ test('config: "Show me how" (teach) is the default, v3 resets mode and autoListe
   assert.deepStrictEqual([o.get().mode, o.get().autoListen, o.get().userName], ['teach', false, 'Rose'], 'v2 -> v3 moves once, keeps the rest');
   o.save({ mode: 'do', autoListen: true }); // the family picks them again
   const again = new Config(v2).get();
-  assert.deepStrictEqual([again.mode, again.autoListen, again.settingsVersion], ['do', true, 3], 'a deliberate choice is never moved again');
+  assert.deepStrictEqual([again.mode, again.autoListen, again.settingsVersion], ['do', true, 4], 'a deliberate choice is never moved again');
   const v3 = tmpDir();
   fs.writeFileSync(path.join(v3, 'settings.json'), JSON.stringify({ mode: 'together', settingsVersion: 3 }));
   assert.strictEqual(new Config(v3).get().mode, 'together');
 });
 
-test('speaking speeds: Settings has Slower/Normal/Faster, and the widget speed buttons use the same list', () => {
+test('config v4: the old Faster is the new Normal; a saved speed keeps its label once, a later choice stays', () => {
+  assert.strictEqual(new Config(tmpDir()).get().speechRate, 1.0, 'Normal is 1.0');
+  const moved = [0.8, 0.9, 1.0, 0.7, 1.1].map((r) => {
+    const d = tmpDir();
+    fs.writeFileSync(path.join(d, 'settings.json'), JSON.stringify({ speechRate: r, settingsVersion: 3 }));
+    return new Config(d).get().speechRate;
+  });
+  assert.deepStrictEqual(moved, [0.9, 1.0, 1.1, 0.7, 1.1], 'Slower -> Slow, Normal -> Normal, Faster -> Faster; voice-set speeds stay');
+  const d = tmpDir();
+  fs.writeFileSync(path.join(d, 'settings.json'), JSON.stringify({ speechRate: 0.9, settingsVersion: 3 }));
+  new Config(d).save({ userName: 'Rose' }); // saved as v4
+  assert.strictEqual(new Config(d).get().speechRate, 1.0, 'moved once only');
+  const kept = tmpDir();
+  fs.writeFileSync(path.join(kept, 'settings.json'), JSON.stringify({ speechRate: 0.9, settingsVersion: 4 }));
+  assert.strictEqual(new Config(kept).get().speechRate, 0.9, 'a v4 Slow stays Slow');
+});
+
+test('speaking speeds: Settings has Slow/Normal/Faster, and the widget speed buttons use the same list', () => {
   const src = fs.readFileSync(path.join(UI, 'settings.js'), 'utf8');
   const m = /const SPEEDS = \[([^\]]*)\]/.exec(src);
   assert.ok(m, 'settings.js has SPEEDS');
   const speeds = m[1].split(',').map(Number);
-  assert.strictEqual(speeds.length, 3);
+  assert.deepStrictEqual(speeds, [0.9, 1.0, 1.1], 'the old Faster is the new Normal (the owner, 2026-09-28)');
   for (const r of speeds) assert.ok(r >= 0.7 && r <= 1.1, 'inside the voice-command clamp (tools.js 0.7-1.1)');
   const widget = ['widget.html', 'widget.js'].map((f) => fs.readFileSync(path.join(UI, f), 'utf8')).join('\n');
   const rates = [...widget.matchAll(/data-rate="([\d.]+)"/g)].map((x) => +x[1]);

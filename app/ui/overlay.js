@@ -48,6 +48,8 @@
     const [x, y, w, h] = (Array.isArray(m.rect) ? m.rect : []).map(Number);
     if (![x, y, w, h].every(Number.isFinite)) return clear();
     const r = { x: x - PAD, y: y - PAD, w: w + 2 * PAD, h: h + 2 * PAD };
+    // Not on this screen: no ring, and no arrow pointing at the screen edge.
+    if (x + w <= 0 || y + h <= 0 || x >= window.innerWidth || y >= window.innerHeight) return clear();
     const hl = $('hl'), ring = $('ring'), arrow = $('arrow'), bubble = $('bubble');
     box($('spot'), r.x, r.y, r.w, r.h);
     box(ring, r.x, r.y, r.w, r.h);
@@ -60,16 +62,25 @@
 
     // Label on the side with the most room; the arrow sits between it and the ring (clear of the 6% pulse).
     const o = { l: r.x - BAND, t: r.y - BAND, r: r.x + r.w + BAND, b: r.y + r.h + BAND };
-    // Our docked panel (main passes its rect as avoid): the free screen ends where the panel starts.
+    // Our docked panel (main passes its rect as avoid, docked right or left): the free screen stops at the panel.
     const av = Array.isArray(m.avoid) && m.avoid.length === 4 ? m.avoid.map(Number) : null;
-    const W = av && av.every(Number.isFinite) && av[0] > r.x + r.w ? Math.min(window.innerWidth, av[0]) : window.innerWidth;
+    const ok = av && av.every(Number.isFinite);
+    // The dim never darkens the panel (its green "I did it" button stays bright): the panel is cut out of the spot's
+    // shadow. Polygon points are relative to the spot's own box; evenodd makes the inner rect a hole.
+    const at = (px, py) => (px - r.x) + 'px ' + (py - r.y) + 'px';
+    $('spot').style.clipPath = ok ? 'polygon(evenodd, ' + [at(0, 0), at(window.innerWidth, 0), at(window.innerWidth, window.innerHeight),
+      at(0, window.innerHeight), at(0, 0), at(av[0], av[1]), at(av[0], av[1] + av[3]), at(av[0] + av[2], av[1] + av[3]),
+      at(av[0] + av[2], av[1]), at(av[0], av[1])].join(', ') + ')' : '';
+    const W = ok && av[0] > r.x + r.w ? Math.min(window.innerWidth, av[0]) : window.innerWidth;
+    const L = ok && av[0] + av[2] < r.x ? Math.max(0, av[0] + av[2]) : 0;
     const Hh = window.innerHeight;
-    const room = { bottom: Hh - o.b, top: o.t, right: W - o.r, left: o.l };
+    const room = { bottom: Hh - o.b, top: o.t, right: W - o.r, left: o.l - L };
     const side = Object.keys(room).reduce((a, k) => (room[k] > room[a] ? k : a), 'bottom');
     const gapV = 8 + Math.ceil(0.03 * r.h), gapH = 8 + Math.ceil(0.03 * r.w);
     const cx = (o.l + o.r) / 2, cy = (o.t + o.b) / 2;
+    bubble.style.maxWidth = 'min(480px, ' + Math.max(160, W - L - 2 * EDGE) + 'px)'; // fits beside the panel
     const bw = bubble.offsetWidth, bh = bubble.offsetHeight;
-    const cX = (v) => Math.max(EDGE, Math.min(v, W - bw - EDGE));
+    const cX = (v) => Math.max(L + EDGE, Math.min(v, W - bw - EDGE));
     const cY = (v) => Math.max(EDGE, Math.min(v, Hh - bh - EDGE));
     let ax, ay, rot, bx, by;
     if (side === 'bottom') { ax = cx - 24; ay = o.b + gapV; rot = 0; bx = cX(cx - bw / 2); by = ay + ARROW + 6; }

@@ -34,6 +34,7 @@ static class N
     [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
     [StructLayout(LayoutKind.Sequential)] public struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public POINT pt; }
     [StructLayout(LayoutKind.Sequential)] public struct MSLLHOOKSTRUCT { public POINT pt; public uint mouseData; public uint flags; public uint time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)] public struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public uint flags; public uint time; public IntPtr dwExtraInfo; }
     [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
     [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
     [StructLayout(LayoutKind.Explicit)] public struct INPUTUNION { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
@@ -258,6 +259,8 @@ static class Helper
             case "window_at": return WindowAt(a);
             case "wait_click": return WaitClick(a);
             case "cancel_wait": return CancelWait();
+            case "wait_typing": return WaitTyping(a);
+            case "focus_value": return FocusValue();
             case "listen": return Listen(a);
             case "speak": return Speak(a);
             case "stop_speaking": return StopSpeaking();
@@ -1436,8 +1439,6 @@ static class Helper
     static void HookLoop(ClickState st, int timeout)
     {
         uint me = N.GetCurrentThreadId();
-        N.MSG m;
-        N.PeekMessage(out m, IntPtr.Zero, 0, 0, 0); // create the message queue before anyone posts to it
         N.LowLevelMouseProc proc = delegate(int nCode, IntPtr wParam, IntPtr lParam)
         {
             if (nCode >= 0 && !st.Clicked)
@@ -1457,15 +1458,30 @@ static class Helper
             }
             return N.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         };
-        IntPtr hook = N.SetWindowsHookEx(14, proc, N.GetModuleHandle(null), 0);
-        if (hook == IntPtr.Zero) { st.Error = "mouse hook failed (" + Marshal.GetLastWin32Error() + ")"; return; }
+        RunHook(14, proc, timeout, null, st);
+    }
+
+    // Runs a low-level hook (14 mouse, 13 keyboard) on this thread until the proc posts WM_QUIT, the timeout, cancel_wait,
+    // or poll() says done (checked every 100 ms).
+    static void RunHook(int id, N.LowLevelMouseProc proc, int timeout, Func<bool> poll, ClickState st)
+    {
+        uint me = N.GetCurrentThreadId();
+        N.MSG m;
+        N.PeekMessage(out m, IntPtr.Zero, 0, 0, 0); // create the message queue before anyone posts to it
+        IntPtr hook = N.SetWindowsHookEx(id, proc, N.GetModuleHandle(null), 0);
+        if (hook == IntPtr.Zero) { st.Error = (id == 14 ? "mouse" : "keyboard") + " hook failed (" + Marshal.GetLastWin32Error() + ")"; return; }
         lock (WaitLock) WaitThreads.Add(me);
         UIntPtr timer = N.SetTimer(IntPtr.Zero, UIntPtr.Zero, (uint)timeout, IntPtr.Zero);
+        UIntPtr tick = poll == null ? UIntPtr.Zero : N.SetTimer(IntPtr.Zero, UIntPtr.Zero, 100, IntPtr.Zero);
         try
         {
             while (N.GetMessage(out m, IntPtr.Zero, 0, 0) > 0)
             {
-                if (m.message == 0x0113 && m.hwnd == IntPtr.Zero) break;           // our WM_TIMER
+                if (m.message == 0x0113 && m.hwnd == IntPtr.Zero)                  // our WM_TIMERs
+                {
+                    if (poll != null && (ulong)m.wParam.ToInt64() == tick.ToUInt64() && !poll()) continue;
+                    break;
+                }
                 if (m.message == 0x8001) { st.Cancelled = true; break; }          // cancel_wait
                 N.TranslateMessage(ref m);
                 N.DispatchMessage(ref m);
@@ -1475,9 +1491,80 @@ static class Helper
         {
             lock (WaitLock) WaitThreads.Remove(me);
             N.KillTimer(IntPtr.Zero, timer);
+            if (poll != null) N.KillTimer(IntPtr.Zero, tick);
             N.UnhookWindowsHookEx(hook);
             GC.KeepAlive(proc);
         }
+    }
+
+    // wait_typing: counts the person's key presses (never which keys) until they pressed Enter, or typed and then paused
+    // idleMs. Injected keys (our own type/key commands) do not count, except in the demo (BARNABY_ALLOW_INJECTED).
+    static object WaitTyping(Args a)
+    {
+        int timeout = Math.Max(1, Int(a, "timeoutMs", 180000)), idle = Math.Max(100, Int(a, "idleMs", 2500));
+        ClickState st = new ClickState();
+        int keys = 0, last = 0;
+        bool enter = false;
+        Thread t = new Thread(delegate()
+        {
+            uint me = N.GetCurrentThreadId();
+            N.LowLevelMouseProc proc = delegate(int nCode, IntPtr wParam, IntPtr lParam)
+            {
+                int msg = wParam.ToInt32();
+                if (nCode >= 0 && !enter && (msg == 0x0100 || msg == 0x0104)) // WM_KEYDOWN, WM_SYSKEYDOWN
+                {
+                    N.KBDLLHOOKSTRUCT k = (N.KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(N.KBDLLHOOKSTRUCT));
+                    uint vk = k.vkCode;
+                    bool modifier = (vk >= 0x10 && vk <= 0x12) || (vk >= 0xA0 && vk <= 0xA5) || vk == 0x5B || vk == 0x5C || vk == 0x14;
+                    if (((k.flags & 0x10) == 0 || AllowInjected) && !modifier) // LLKHF_INJECTED
+                    {
+                        keys++; last = Environment.TickCount;
+                        if (vk == 0x0D) { enter = true; N.PostThreadMessage(me, 0x0012, IntPtr.Zero, IntPtr.Zero); }
+                    }
+                }
+                return N.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+            };
+            RunHook(13, proc, timeout, delegate { return keys > 0 && Environment.TickCount - last >= idle; }, st);
+        });
+        t.IsBackground = true;
+        t.Start();
+        t.Join();
+        if (st.Error != null) throw new Exception(st.Error);
+        Args r = new Args();
+        r["typed"] = keys; r["enter"] = enter;
+        if (st.Cancelled) r["cancelled"] = true;
+        return r;
+    }
+
+    // The focused box: name and role, and its text only when it is not a password or secret-looking field.
+    static object FocusValue()
+    {
+        Args res = null;
+        Thread t = new Thread(delegate()
+        {
+            try
+            {
+                AutomationElement e = AutomationElement.FocusedElement;
+                if (e == null) return;
+                ControlType ct = e.Current.ControlType;
+                string name = e.Current.Name, value = null;
+                bool pw = e.Current.IsPassword;
+                object vp;
+                if (!pw && e.TryGetCurrentPattern(ValuePattern.Pattern, out vp)) value = ((ValuePattern)vp).Current.Value;
+                Args r = new Args();
+                r["name"] = Clip(name, 200) ?? "";
+                r["role"] = ct.ProgrammaticName.StartsWith("ControlType.") ? ct.ProgrammaticName.Substring(12) : ct.ProgrammaticName;
+                r["password"] = pw;
+                r["secret"] = pw || (SecretRole(ct) && IsSecretField(name, e.Current.AutomationId, value));
+                if (!(bool)r["secret"]) r["value"] = Clip(value, 300);
+                res = r;
+            }
+            catch (Exception) { }
+        });
+        t.IsBackground = true;
+        t.Start();
+        t.Join(2000); // a hung app cannot stall us
+        return res ?? new Args();
     }
 
     static object CancelWait()

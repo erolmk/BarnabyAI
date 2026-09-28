@@ -14,7 +14,7 @@ const { tc, assistant } = F;
 const signals = require('../src/scam_signals.json');
 
 // Its own temp folder: test files run in parallel, and agent.test.js wipes test/.tmp when it ends.
-const TMP = path.join(__dirname, '.tmp-directing');
+const TMP = path.join(__dirname, '.tmp-directing', 'p' + process.pid); // per process: a parallel suite wipes only its own
 const tmpDir = () => { fs.mkdirSync(TMP, { recursive: true }); return fs.mkdtempSync(path.join(TMP, 'a-')); };
 test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
@@ -125,7 +125,7 @@ test('effort: high for step 1 and right after a surprise only (no sticky high), 
   ] });
   await sup.agent.runSupport('my computer is slow');
   assert.deepEqual(sup.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['high', 'high', 'low']);
-  for (const [thinking, want] of [['always', 'high'], ['never', 'low']]) {
+  for (const [thinking, want] of [['always', 'high'], ['never', 'none']]) {
     const t = makeAgent({ settings: { thinking }, script: [assistant(tc('scroll', { direction: 'down', explain: 'x' })), assistant(tc('done', { summary: 'ok' }))] });
     await t.agent.runTask('scroll');
     assert.deepEqual(t.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), [want, want], thinking);
@@ -138,6 +138,39 @@ test('effort: high for step 1 and right after a surprise only (no sticky high), 
   await p.agent.runTask('write an email');
   assert.equal(m, 0, 'a plan step is not a decision');
   assert.equal(p.llm.calls[1].reasoningEffort, 'low');
+});
+
+test('effort: Jev picks none / low / high beside the look; unsure takes the higher of its top two; a surprise thinks at least a little', async () => {
+  const answers = [
+    { choice: 'high', confidence: 0.9, probabilities: { none: 0.05, low: 0.05, high: 0.9 } }, // a new plan
+    { choice: 'none', confidence: 0.97, probabilities: { none: 0.97, low: 0.02, high: 0.01 } }, // routine
+    { choice: 'none', confidence: 0.4, probabilities: { none: 0.45, low: 0.15, high: 0.4 } }, // unsure: none or high -> high
+    { choice: 'none', confidence: 0.99, probabilities: { none: 0.99, low: 0.01, high: 0 } }, // after an error: at least low
+  ];
+  const asked = [], lines = [];
+  const h = makeAgent({
+    log: (...a) => lines.push(a.join(' ')),
+    jev: { choice: async (state, ask, criteria, opts) => { h.events.push({ type: 'jev' }); asked.push({ state, criteria, opts }); return answers[asked.length - 1]; } },
+    script: [
+      assistant(tc('click', { element_id: 1, explain: 'Clicking.' })),
+      assistant(tc('click', { element_id: 1, explain: 'Clicking again.' })),
+      assistant(tc('click', { element_id: 999, explain: 'Clicking the missing one.' })),
+      assistant(tc('done', { summary: 'ok' })),
+    ],
+  });
+  await h.agent.runTask('do it');
+  const brain = h.llm.calls.filter((c) => c.tools);
+  assert.deepEqual(brain.map((c) => c.reasoningEffort), ['high', 'none', 'high', 'low']);
+  assert.deepEqual(brain.map((c) => c.maxTokens), [6000, 1200, 6000, 2500]);
+  assert.deepEqual(Object.keys(asked[0].criteria), ['none', 'low', 'high']);
+  assert.equal(asked[0].opts.timeoutMs, 1500);
+  assert.deepEqual(asked.map((a) => a.state.step), [1, 2, 3, 4]);
+  assert.equal(asked[0].state.goal, 'do it');
+  assert.match(asked[3].state.last_results[0], /ERROR|no item|not/i);
+  // asked before the look, not after it
+  const ev = h.events.map((e) => e.type === 'native' ? e.cmd : e.type);
+  assert.ok(ev.indexOf('jev') < ev.indexOf('screenshot'), ev.join(','));
+  assert.ok(lines.some((l) => /^\[think\] none jev 0\.97 \d+ms$/.test(l)), lines.join('\n'));
 });
 
 test('each brain call logs its token counts and provider, never content', async () => {

@@ -30,7 +30,9 @@
     return { items, before: start, after: p.length - start - items.length };
   }
 
-  function view(st, name) {
+  // shown: the question or caption already on screen in the panel. A status label that only repeats it gives way to
+  // the state's own words ("Your turn"): guide_user's instruction showed twice, in the status card and the question.
+  function view(st, name, shown) {
     st = st && typeof st === 'object' ? st : {};
     name = name || 'Barnaby';
     const state = STATES[st.state] ? st.state : 'idle';
@@ -39,7 +41,7 @@
     const word = careful ? 'Thinking carefully' : word0;
     const sentence = careful ? 'Thinking carefully…' : sentence0;
     const step = +st.step > 0 ? 'Step ' + (+st.step) + (+st.totalSteps >= +st.step ? ' of ' + (+st.totalSteps) : '') : '';
-    const label = clean(st.label);
+    const label = clean(st.label) === clean(shown) ? '' : clean(st.label);
     const title = label || sentence;
     // The small line above the title: what kind of thing is happening and where we are (never repeats the title).
     // (a step being done is said by "Step 2 of 5" alone)

@@ -1,4 +1,8 @@
 /* Helper widget (UX 11.2 / 11.3). Tokens come from shared.css. The window is transparent. */
+/* The panel's own sizes (the owner, 2026-09-28): Barnaby's words bigger than the buttons, plain text and buttons a
+   bit smaller. Never below 18 px at text size 1; all still grow with the text size. */
+:root { --fs-min: calc(18px * var(--ui-scale)); --fs-body: calc(22px * var(--ui-scale)); --fs-button: calc(22px * var(--ui-scale));
+  --fs-h3: calc(24px * var(--ui-scale)); --fs-caption: calc(30px * var(--ui-scale)); }
 html, body { height: 100%; margin: 0; overflow: hidden; background: transparent; }
 body.demo { background: #C9CFD6; } /* browser review only: shows where the window is transparent */
 
@@ -18,7 +22,7 @@ body.expanded .pill, body.collapsed .panel { display: none; }
 .avatar-wrap { position: relative; flex: none; display: block; }
 .avatar { width: 56px; height: 56px; flex: none; display: block; border-radius: 50%;
   box-shadow: 0 0 0 3px #FFFFFF; } /* white ring: the avatar is the same blue as the pill */
-.pill-word { font-size: min(var(--fs-h3), 38px); font-weight: var(--fw-strong); line-height: 1.15; }
+.pill-word { font-size: min(calc(28px * var(--ui-scale)), 38px); font-weight: var(--fw-strong); line-height: 1.15; }
 .pill-words { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
 /* busy: "Help" stays, the state word goes under it (20 px, fixed: the pill does not grow with the text size) */
 .pill-state { font-size: 20px; font-weight: var(--fw-strong); line-height: 1.15; white-space: nowrap; }
@@ -98,6 +102,7 @@ body.asking .st-icon .icon { width: 26px; height: 26px; }
 body.compact .middle::-webkit-scrollbar { width: 24px; }
 /* compact: the always-there controls stop growing past 28 px so they stay on one line each */
 body.compact .bottom button, body.compact .small-btn { font-size: min(var(--fs-button), 28px); gap: 6px; }
+body.compact .bottom button { font-size: min(var(--fs-bottom), 24px); }
 .middle::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 3px solid var(--surface); }
 .middle::-webkit-scrollbar-track { background: transparent; }
 
@@ -118,6 +123,10 @@ body.compact .bottom button, body.compact .small-btn { font-size: min(var(--fs-b
 /* answers: stacked big buttons, text answer, or the confirm card */
 .answers { display: flex; flex-direction: column; gap: var(--space-2); }
 .answers .legend { font-size: var(--fs-body); font-weight: var(--fw-strong); }
+/* guide_user's "I did it, but Barnaby didn't notice": first, big and green; the ring's dim keeps off the panel */
+.answers button.green { min-height: 112px; font-size: calc(var(--fs-button) * 1.1); background: var(--success);
+  color: var(--on-success); border: 3px solid var(--success); }
+.answers button.green:hover { background: var(--success); color: var(--on-success); border-color: var(--text); }
 .answers.two { display: grid; grid-template-columns: 1fr 1fr; }
 .answers.two .legend, .answers.two .full { grid-column: 1 / -1; }
 .answers button { width: 100%; min-height: 88px; padding: var(--space-1) var(--space-2);
@@ -141,7 +150,7 @@ body.compact .bottom button, body.compact .small-btn { font-size: min(var(--fs-b
 .more-btn.up .ico { transform: rotate(180deg); }
 
 /* "Please wait": big dots that rise in turn. Each dot changes once per 1.6 s (no flashing, WCAG 2.3.1); livelier than
-   UX 2.4's calm pulse because the owner asked for an animated sign; still under reduced motion (shared.css). */
+   UX 2.4's calm pulse because the owner asked for an animated sign; fading only under reduced motion (below). */
 .think-big { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--space-2); margin-top: 6px;
   font-size: var(--fs-h3); font-weight: var(--fw-strong); line-height: var(--lh-tight); }
 .think-big .dots { flex: none; display: flex; gap: 14px; padding-top: 8px; }
@@ -150,6 +159,14 @@ body.compact .bottom button, body.compact .small-btn { font-size: min(var(--fs-b
 .think-big i:nth-child(2) { animation-delay: .27s; }
 .think-big i:nth-child(3) { animation-delay: .53s; }
 @keyframes think-dot { 0%, 100% { opacity: .35; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-8px); } }
+/* Reduced motion (Windows "Animation effects" off, which can change mid-task) used to stop the dots dead: "it just
+   stays stuck". They still take turns, by fading only (no movement), so the sign never stands still. */
+@keyframes think-fade { 0%, 100% { opacity: .35; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .think-big i { animation: think-fade 1.6s ease-in-out infinite !important; }
+  .think-big i:nth-child(2) { animation-delay: .27s !important; }
+  .think-big i:nth-child(3) { animation-delay: .53s !important; }
+}
 
 .listen-row { background: var(--primary-soft); color: var(--primary-ink); border-radius: var(--radius);
   padding: var(--space-1) var(--space-2) var(--space-2); }
@@ -167,7 +184,7 @@ button.talk.listening { box-shadow: 0 0 0 5px var(--primary-soft), 0 0 0 7px var
 button.talk { transition: transform 120ms ease-out, min-height 120ms ease-out; }
 button.talk.holding { transform: scale(1.06); min-height: 132px; font-size: calc(var(--fs-h3) * 1.15); box-shadow: 0 0 0 6px #F2A516, 0 0 0 12px rgba(242, 165, 22, 0.35); }
 
-/* speaking speed: Slower / Normal / Faster, the chosen one filled */
+/* speaking speed: Slow / Normal / Faster, the chosen one filled */
 .speed-row { display: grid; grid-template-columns: auto 1fr 1fr 1fr; gap: var(--space-1); align-items: center; }
 .speed-row span { font-size: var(--fs-min); font-weight: var(--fw-strong); }
 .speed-row button { min-height: 64px; padding: 4px; white-space: normal; }
@@ -178,12 +195,15 @@ body.asking .speed-row, body:not(.docked) .speed-row { display: none; }
 body.compact .speed-row { grid-template-columns: 1fr 1fr 1fr; }
 body.compact .speed-row span { display: none; }
 
-.bottom { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
-.bottom button { min-height: 64px; padding: 4px var(--space-1); white-space: normal; }
+.bottom { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-1); }
+/* Say it again / Stop / Home / Move me: always there, so smaller than the words and the answers (the owner) */
+.bottom { --fs-bottom: calc(19px * var(--ui-scale)); }
+.bottom button { min-height: 56px; padding: 4px var(--space-1); font-size: var(--fs-bottom); white-space: normal; }
 
 @media (forced-colors: active) {
   .pill, .panel, .captions, .fields, .meter, .status-card, .plan li.now, .you-said { border: 2px solid CanvasText; }
   .think-big i { background: CanvasText; }
+  .answers button.green { border: 4px solid Highlight; }
   .speed-row button[aria-pressed="true"] { border: 4px solid Highlight; }
   .meter-fill { background: Highlight; }
 }

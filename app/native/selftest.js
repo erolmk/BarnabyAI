@@ -250,6 +250,19 @@ async function main() {
     assert(c.cancelled >= 1 && r.clicked === false && r.cancelled === true, JSON.stringify({ c, r }));
   });
 
+  await test('wait_typing ends on its timeout and on cancel_wait; focus_value never sends a password', async () => {
+    const r = await h.ok('wait_typing', { timeoutMs: 600 });
+    assert(r.typed === 0 && r.enter === false, 'typed (did someone use the keyboard?) ' + JSON.stringify(r));
+    const wt = h.ok('wait_typing', { timeoutMs: 10000 });
+    await sleep(300);
+    await h.ok('cancel_wait');
+    const c = await wt;
+    assert(c.cancelled === true, JSON.stringify(c));
+    const f = await h.ok('focus_value');
+    assert(!(f.secret && 'value' in f), JSON.stringify(f));
+    return 'focused ' + (f.role || '(none)');
+  });
+
   await test('listen 2000 ms (no crash)', async () => {
     const r = await h.call('listen', { timeoutMs: 2000, culture: 'en-US' }, 15000);
     const pong = await h.ok('ping');

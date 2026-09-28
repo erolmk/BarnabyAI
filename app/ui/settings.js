@@ -80,9 +80,10 @@
   const LOCAL = 'local';
   const NATURAL = [['en-US-Ethan:MAI-Voice-2', 'Ethan', 'Recommended. A calm, low voice.'], ['en-US-Grant:MAI-Voice-2', 'Grant', 'A man’s voice'],
     ['en-US-Jasper:MAI-Voice-2', 'Jasper', 'A man’s voice'], ['en-US-Harper:MAI-Voice-2', 'Harper', 'A softer voice, a woman’s']];
-  // Speaking speed: Slower, Normal, Faster. The widget's speed buttons use the same three (test/setup.test.js checks).
-  const SPEEDS = [0.8, 0.9, 1.0];
-  const speedIdx = (r) => { r = +r || 0.9; return r < 0.85 ? 0 : r > 0.95 ? 2 : 1; }; // a rate set by voice (0.7, 1.1) shows as its nearest step
+  // Speaking speed: Slow, Normal, Faster (the owner, 2026-09-28: the old Faster is the new Normal). The widget's speed
+  // buttons use the same three (test/setup.test.js checks).
+  const SPEEDS = [0.9, 1.0, 1.1];
+  const speedIdx = (r) => { r = +r || 1.0; return r < 0.95 ? 0 : r > 1.05 ? 2 : 1; }; // a rate set by voice (0.7, 0.8) shows as its nearest step
   const VOICE_CHOICES = NATURAL.concat([[LOCAL, 'This computer’s own voice', 'Works without the internet. Nothing leaves the computer.']]);
   const voiceTitle = (d) => (d.muted ? 'Only shows the words' : d.ttsVoice === LOCAL
     ? 'This computer’s own voice' + (d.voiceName ? ': ' + voiceLabel({ name: d.voiceName }) : '')
@@ -95,7 +96,7 @@
     if (h.isDemo) { note.textContent = 'This is a preview, so ' + NAME + ' stays quiet here. In the app this button plays the voice.'; return; }
     if (draft.muted) { note.textContent = 'Speaking is turned off above, so there is nothing to hear.'; return; }
     note.textContent = 'Getting the voice ready…';
-    Promise.resolve(h.testVoice ? h.testVoice({ voice: draft.ttsVoice, speed: +draft.speechRate || 0.9 }) : { error: 'local' })
+    Promise.resolve(h.testVoice ? h.testVoice({ voice: draft.ttsVoice, speed: +draft.speechRate || 1.0 }) : { error: 'local' })
       .catch(() => ({ error: 'other' }))
       .then((r) => {
         if (r && r.error === 'muted') { note.textContent = 'Speaking is turned off, so there is nothing to hear.'; return; }
@@ -110,7 +111,7 @@
     const u = new SpeechSynthesisUtterance('Hello' + (draft.userName ? ' ' + draft.userName : '') + '. I am ' + NAME + '. I will help you, one step at a time.');
     const v = voices().find((x) => x.name === draft.voiceName) || autoVoice();
     if (v) u.voice = v;
-    u.rate = +draft.speechRate || 0.9;
+    u.rate = +draft.speechRate || 1.0;
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
   }
@@ -199,7 +200,7 @@
             '<button type="button" data-voice-pick="deeper">A deeper voice</button><button type="button" data-voice-pick="higher">A higher voice</button></div>' +
             choices('voiceName', [['', 'Automatic', 'A deeper voice, picked by ' + NAME]].concat(list.map((v) => [v.name, esc(voiceLabel(v)), [accent(v), pitch(v)].filter(Boolean).join(' · ')])), 'two-col') +
             (list.length ? '' : '<p class="hint">The voices on this computer will show here once Windows has loaded them.</p>') : '') +
-          '<h3>How fast?</h3>' + choices('speechRate', [[SPEEDS[0], 'Slower'], [SPEEDS[1], 'Normal', 'Recommended'], [SPEEDS[2], 'Faster']], 'three', SPEEDS[speedIdx(draft.speechRate)]) +
+          '<h3>How fast?</h3>' + choices('speechRate', [[SPEEDS[0], 'Slow'], [SPEEDS[1], 'Normal', 'Recommended'], [SPEEDS[2], 'Faster']], 'three', SPEEDS[speedIdx(draft.speechRate)]) +
           '<div class="row"><button type="button" id="test-voice">' + icon('speaker') + '<span>Test the voice</span></button></div>' +
           '<p id="voice-note" class="hint" role="status"></p>';
       } },
@@ -369,7 +370,7 @@
     return {
       userName: String(d.userName || '').trim(), city: String(d.city || '').trim(),
       textScale: Math.min(1.6, Math.max(1, round1(+d.textScale || 1))),
-      ttsVoice: d.ttsVoice || NATURAL[0][0], voiceName: d.voiceName || '', speechRate: +d.speechRate || 0.9, muted: !!d.muted, mode: d.mode || 'teach',
+      ttsVoice: d.ttsVoice || NATURAL[0][0], voiceName: d.voiceName || '', speechRate: +d.speechRate || 1.0, muted: !!d.muted, mode: d.mode || 'teach',
       email: { provider: d.email.provider || '', address: String(d.email.address || '').trim() },
       photos: { provider: d.photos.provider || '' }, video: { provider: d.video.provider || '' },
       // Other keys on a contact (added: 'voice' when Barnaby saved it) are kept, so a save here never erases them.

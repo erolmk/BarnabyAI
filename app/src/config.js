@@ -18,7 +18,7 @@ const DEFAULTS = {
   sttModel: 'google/gemini-3.1-flash-lite',
   jevModel: '~typesafe/jev-latest',
   voiceName: '',
-  speechRate: 0.9,
+  speechRate: 1.0, // Slow 0.9 / Normal 1.0 / Faster 1.1 (v4)
   muted: false,
   autoListen: false, // off since v3: hold-to-talk is the way to talk (the owner, 2026-09-28); on = the mic opens after a question
   ttsStyle: 'happy', // Azure speaking style on Ethan/Harper; 'none' = plain
@@ -41,7 +41,7 @@ const DEFAULTS = {
   taskCostCapUsd: 0.25,
   maxSteps: 40,
   setupDone: false,
-  settingsVersion: 3, // one-time moves below run only for files saved before this number
+  settingsVersion: 4, // one-time moves below run only for files saved before this number
 };
 
 // Old default -> dropped on load, so the current default applies.
@@ -85,6 +85,13 @@ class Config extends EventEmitter {
     if (!saved.settingsVersion && saved.mode === 'together') delete saved.mode;
     // v3 (the owner, 2026-09-28): Barnaby shows the person what to click ("Show me how") and they hold Talk to speak.
     if ((saved.settingsVersion || 0) < 3) { delete saved.mode; delete saved.autoListen; saved.settingsVersion = 3; }
+    // v4 (the owner, 2026-09-28): the old Faster is the new Normal. A saved speed keeps its label: Slower -> Slow,
+    // Normal -> Normal, Faster -> Faster (0.8/0.9/1.0 -> 0.9/1.0/1.1); a speed set by voice (0.7, 1.1) stays.
+    if (saved.settingsVersion < 4) {
+      const moved = { 0.8: 0.9, 0.9: 1.0, 1: 1.1 }[saved.speechRate];
+      if (moved) saved.speechRate = moved;
+      saved.settingsVersion = 4;
+    }
     this.data = merge(DEFAULTS, saved);
   }
   get() {

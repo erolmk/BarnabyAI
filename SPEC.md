@@ -135,7 +135,7 @@ Main → renderer events (channel: payload):
   (details for confirm: `{title, fields:[{label,value}]}` e.g. email To/Subject/Body/Attachments; `sayId` = the
   id of the `say` line that speaks the question, so the widget knows when it has been said to the end)
 - `ask-cancel`: `{requestId}`
-- `overlay` (overlay window only): `{type:"highlight", rect:[x,y,w,h] (DIP), label, arrow:true}` |
+- `overlay` (overlay window only): `{type:"highlight", rect:[x,y,w,h] (that overlay page's px), label, arrow:true, dim, avoid}` |
   `{type:"warning", title, body, level:"scam"|"info"}` | `{type:"clear"}`
 - `lesson-saved`: `{id,title}`; `settings-changed`: settings; `task-done`: `{summary}`
 
@@ -148,6 +148,8 @@ Main → renderer events (channel: payload):
   `update_settings` accepts "auto". The helper switches itself to `do` for the rest of a task when the person
   misses the ring twice in a row, one 3-minute timeout, "I need help" twice, or "Please do it for me" (`ctx.stuck >= 2`).
   settingsVersion 3 resets `mode` and `autoListen` to the new defaults once.
+  A ring's ask puts "I did it, but Barnaby didn't notice" first as a big green button (`green` in the ask message);
+  the overlay's dim has a hole over the docked panel, so the panel stays bright while a ring shows.
 - Asking policy (owner, 2026-09-28): never ask permission to run commands, press keys, click, type, open things
   or apply fixes. The only questions left: a hard rule's own confirm (`g.rule`: R3b/R5/R6/R11/R14b, sendAsked,
   a delete command), a gate "confirm" the model marks `risky` (sends/pays/buys/deletes/posts, e.g. "Confirm and
@@ -164,7 +166,7 @@ Main → renderer events (channel: payload):
   transcript so far. The screenshot is only the `work_area` of the window's screen (no taskbar, no docked AppBar;
   a docked panel without an AppBar, `ui.dockedPanel()`, is cut off too), so 1080p is not shrunk. The taskbar's
   buttons follow as a text section (`Taskbar (bottom of the screen, not in the picture)`, ids after the window's,
-  Text items dropped). "Second screen" = the monitor's corner is not 0,0 (never the picture's origin). Send to brain model with tools. Execute returned tool calls in order.
+  Text items dropped). "Second screen" = the monitor's corner is not 0,0 (never the picture's origin). A look stays on the last look's window when the new foreground is an already-open window on another screen and the old one is still there and not minimized (followed: same window, same screen, a new window, or right after `open`/`press_keys`). Log: `[look] window proc screen x,y,w,h region x,y,w,h factor f`. Send to brain model with tools. Execute returned tool calls in order.
   Max 40 steps, per-task cost cap (settings, default $0.25), timeout 15 min, Stop button aborts.
 - Every action tool carries `explain` (one short sentence, about 15 words: what and where, why only when not
   obvious; never repeats the task). The caption and ring show first, and the action waits at most 1.2 s (0.6 s
@@ -173,6 +175,11 @@ Main → renderer events (channel: payload):
   `press_keys{keys, explain}`, `scroll{direction, amount, explain}`, `open{target, explain}`,
   `wait{seconds}`, `say{text}` (findings / what changed, no question), `ask_user{question, choices?}`, `guide_user{element_id|x,y,w,h, instruction,
   wait_for:"click"|"done"}` (overlay highlight → wait for the person's real click or "I did it"),
+  One action per guide_user ("then", "after that", or type/write followed by click/tap → ERROR). x,y with no
+  element_id (guide_user, click, zoom) snaps to a listed clickable/typable item (`snapEl`: the one the words name,
+  else under the point, else within 40 picture px; taskbar and disabled items never) and the result says so. A
+  "done" step with a ring watches for a click inside it (background `wait_click`, cancelled at the end of the step)
+  and then drops the label (ring stays, no dimming).
   `confirm{title, fields[], question}` (big card, Yes/No; REQUIRED before anything that sends,
   buys, deletes, posts, or changes settings), `remember{fact}`, `save_contact{name, email?, phone?, relation?}`
   (adds a contact the person dictated, marked `added:'voice'`; never overwrites a Settings contact; refused in a
@@ -317,6 +324,12 @@ Native `windows`/`foreground` results include `pid` so we can skip our own windo
   agent's own-click ring (tools.js, before click/type) MUST pass `{dim:false}` (UX 11.4: no dimming when the
   helper clicks).
 - `broadcast()` reaches every window, the overlay included.
+- One overlay per display (2026-09-28, mixed scaling): `placeOverlay` picks the ring's display with
+  `widgetgeom.ringOnDisplay` (centre, else nearest; that display's own scaleFactor and physical corner) and REBUILDS the
+  overlay there (`createOverlay(d)`) when the display, scale or bounds differ; never `setBounds` across screens.
+  Messages wait for the new page (`overlayReady`); a warning showing is re-sent to a rebuilt overlay. A ring off
+  the page draws nothing; the label keeps clear of the docked panel on either side. Log: `[ring] display id scale s rect x,y,w,h`.
+- Status card: a label equal to the open question / latest caption is dropped (`status.view(st, name, shown)`).
 - `ui.warn({title, body, level, kind?})`: `kind` = the guardian's scam kind (tech_support, gift_card, ...).
   Every `level:'scam'` warning is written to the safety diary.
 - Agent event `'refused'` `{rule}` (guardian rule id, e.g. 'R1'; no page text) — main writes it to the safety
@@ -361,10 +374,11 @@ Native `windows`/`foreground` results include `pid` so we can skip our own windo
 - The "You said/typed/chose" bubble: right-aligned, person icon, 28 px upright text, no quotes; it stays just
   above Barnaby's answer.
 - Big thinking sign: three animated dots + "Please wait…" inside the status card whenever busy and no question
-  or mic is open (a cancelled auto mic keeps it). 34 px dots, text at --fs-h3. Deviates from 02_ux 2.4 at the owner's request (opacity 0.35-1, 8 px rise, 1.6 s period); off
-  under reduced motion.
-- Widget speed row (docked panel only; hidden when muted, asking or floating; big text shows it without its label): Slower / Normal / Faster
-  = speechRate 0.8 / 0.9 / 1.0, the same steps as Settings (`SPEEDS` in ui/settings.js; test/setup.test.js checks
+  or mic is open (a cancelled auto mic keeps it). 34 px dots, text at --fs-h3. Deviates from 02_ux 2.4 at the owner's request (opacity 0.35-1, 8 px rise, 1.6 s period); under
+  reduced motion they only fade in turn. The widget window has backgroundThrottling off so the dots never freeze.
+- Widget speed row (docked panel only; hidden when muted, asking or floating; big text shows it without its label): Slow / Normal / Faster
+  = speechRate 0.9 / 1.0 / 1.1 (owner 2026-09-28: the old Faster is the new Normal; `settingsVersion` 4 moves saved
+  values once by label, 0.8->0.9, 0.9->1.0, 1.0->1.1), the same steps as Settings (`SPEEDS` in ui/settings.js; test/setup.test.js checks
   they match). Voice commands may still set 0.7-1.1, shown as the nearest step.
 - TTS (src/tts.js): consecutive sentences grouped into requests of up to 220 characters ("Step N of M." alone,
   600 ms after it); 80 ms tail trim; the Flash model gets the -Flash voice id. `settings.ttsStyle` (default

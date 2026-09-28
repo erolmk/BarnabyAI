@@ -42,7 +42,7 @@ const ALL = [
       w: { type: 'number', description: 'Width of the area in screenshot pixels (optional).' },
       h: { type: 'number', description: 'Height of the area in screenshot pixels (optional).' },
       instruction: { type: 'string', description: 'What the person should do, in one short sentence with colour and position, e.g. "Please click the blue Send button at the bottom left."' },
-      wait_for: { type: 'string', enum: ['click', 'done'], description: '"click" = one click on the ring; "done" = typing, choosing, or several clicks (they press "I did it").' },
+      wait_for: { type: 'string', enum: ['click', 'done'], description: '"click" = one click (left or right) on the ring; "done" = typing (it goes on by itself when they finish), choosing, or several clicks (they press "I did it").' },
     }, ['instruction']),
   fn('confirm', 'Show a big card with the exact details and ask Yes or No. REQUIRED before anything that sends, buys, pays, posts, deletes or changes settings. For an email use fields To (full address), Subject, Message, Attachments.',
     {
@@ -126,6 +126,9 @@ const center = (r) => ({ x: Math.round(r[0] + r[2] / 2), y: Math.round(r[1] + r[
 // ---------- helpers ----------
 // Final, irreversible buttons: the person always presses these (backs up the guardian).
 const FINAL = /^(send|send now|send email|pay|pay now|place (your )?order|buy|buy now|purchase|complete (purchase|order)|confirm (purchase|payment|order)|submit|submit payment|delete|delete forever|delete account|post|transfer|checkout|check out)$/i;
+// A guide_user instruction that chains actions (the owner's session: "type a subject ..., then click into the message
+// area and write"). "Click the box and type X" is one step; typing and THEN clicking somewhere is two.
+const CHAINED = /\b(then|after that|afterwards)\b|\b(type|write)\b.*\b(click|tap)\b/i;
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 const safe = (f) => { try { return f(); } catch (_) { return null; } };
@@ -150,6 +153,43 @@ function elementAt(ctx, x, y) {
   }
   return best;
 }
+// A picture point snaps to the listed item it means (the owner's 2026-09-28 session: x,y 40 px low ringed the Subject
+// line instead of the To box). Only clickable/typable items on the picture: the item the words name, else one under the
+// point (editable first, smallest), else the nearest within ~40 picture px vertically. null: keep the point.
+const INTERACTIVE = /^(Button|Hyperlink|Edit|ComboBox|ListItem|MenuItem|TabItem|CheckBox|RadioButton|TreeItem|DataItem|SplitButton|Slider|Spinner)$/;
+const EDITABLE = /^(Edit|ComboBox|Spinner)$/;
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function named(words, name) {
+  const n = String(name || '').trim();
+  if (!words || !n) return false;
+  if (n.length >= 3 && new RegExp('\\b' + esc(n) + '\\b', 'i').test(words)) return true;
+  const w = n.split(/\s+/)[0]; // "To recipients" is named by "the box next to To"
+  return /^[A-Z]\w/.test(w) && new RegExp('\\b' + esc(w) + '\\b').test(words);
+}
+// strict (Barnaby's own click): only the item under the point or the one the words name, never just the nearest
+// (a nearby ordinary button is not the one meant); the person's ring keeps the looser nearest-item fallback.
+function snapEl(ctx, p, words, strict) {
+  const els = ctx.obs && ctx.obs.elements, img = ctx.obs && ctx.obs.img;
+  if (!els || !img) return null;
+  const pad = 40 * img.factor;
+  let best = null, bestKey = null;
+  for (const e of els.values()) {
+    const r = e.rect;
+    if (!r || !INTERACTIVE.test(e.role || '') || e.enabled === false) continue;
+    const c = toImage(img, r[0] + r[2] / 2, r[1] + r[3] / 2);
+    if (c.x < 0 || c.y < 0 || c.x > img.width || c.y > img.height) continue; // not on the picture (the taskbar)
+    if (p.x < r[0] - pad || p.x > r[0] + r[2] + pad) continue;
+    const dy = p.y < r[1] ? r[1] - p.y : p.y > r[1] + r[3] ? p.y - r[1] - r[3] : 0;
+    const inside = dy === 0 && p.x >= r[0] && p.x <= r[0] + r[2];
+    if (!inside && dy > pad) continue;
+    if (strict && !inside && !named(words, e.name)) continue;
+    const key = [named(words, e.name) ? 0 : 1, inside ? 0 : 1, EDITABLE.test(e.role) ? 0 : 1, dy, r[2] * r[3]];
+    if (!bestKey || less(key, bestKey)) { best = e; bestKey = key; }
+  }
+  return best;
+}
+const less = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i]; return false; };
+const snapNote = (ctx, e) => { ctx.snapNote = 'I used the listed item [' + e.id + '] "' + elName(e) + '" at its exact place instead of x,y; next time use element_id ' + e.id + '.'; };
 function focused(ctx) {
   const els = ctx.obs && ctx.obs.elements;
   if (els) for (const e of els.values()) if (e.focused) return e;
@@ -282,6 +322,8 @@ function resolvePoint(ctx, args) {
     const img = ctx.obs && ctx.obs.img;
     if (!img) return { error: 'ERROR: there is no screenshot to measure from. Use an item number.' };
     const p = toPhysical(img, args.x, args.y);
+    const s = snapEl(ctx, p, args.explain, true);
+    if (s) { snapNote(ctx, s); return { el: s, p: center(s.rect) }; }
     return { el: elementAt(ctx, p.x, p.y), p };
   }
   return { error: 'ERROR: give element_id, or x and y.' };
@@ -434,9 +476,71 @@ async function askUser(ctx, args) {
   return 'The person answered: "' + ans + '"';
 }
 
+// The ring's first answer: the widget shows it as a big green button the overlay never dims. It counts as "I did it".
+const GREEN = 'I did it, but Barnaby didn\'t notice';
+const DID_IT = /^i did it\b/i;
+const TYPING = /\b(type|write|fill in)\b|\benter (your|the|a|an)\b/i;
+const RIGHT_CLICK = /\bright[- ]?click/i;
+const SECRET_WORDS = /pass(word|code)|\bpin\b|\bcode\b|card|security|social security|account number|routing/i;
+const TYPED_PAUSE_MS = 2500; // typed, then this long without a key: the typing step is done (or Enter)
+const never = () => new Promise(() => {});
+
+// A typing step, in the background: once they click inside the ring the label goes (the ring stays, thin, no dimming) so
+// it does not cover what they type; then the keyboard is watched (native counts keys, never which) and the step ends on
+// its own after Enter, or a pause once the box's text changed. Never resolves otherwise: "I did it" stays the fallback.
+// A private box (password, code, card) is never read.
+async function watchTyping(ctx, rect, typing, secret, over) {
+  let c = null;
+  for (let i = 0; i < 5 && !over() && !(c && c.inRect); i++) {
+    c = await ctx.native.call('wait_click', { timeoutMs: 180000, rect }, 190000).catch(() => null);
+    if (!c || !c.clicked) return never();
+  }
+  if (over() || !(c && c.inRect)) return never();
+  safe(() => ctx.ui.highlight(rect, '', { dim: false }));
+  if (!typing) return never(); // choosing or several clicks: they say when they are done
+  const look = () => (secret ? Promise.resolve({ secret: true })
+    : Promise.resolve().then(() => ctx.native.call('focus_value', {}, 3000)).then((f) => f || {}, () => ({})));
+  const before = await look();
+  while (!over()) {
+    const k = await ctx.native.call('wait_typing', { timeoutMs: 180000, idleMs: TYPED_PAUSE_MS }, 190000).catch(() => null);
+    if (over() || !k || !k.typed) return never();
+    const now = await look();
+    const hidden = !!(now.secret || now.password || before.secret);
+    // Unreadable (no value, a private box) counts as changed; a readable box must really hold new text.
+    if (k.enter || hidden || now.value == null || now.value !== before.value) {
+      return { typed: { enter: !!k.enter, secret: hidden, value: hidden ? '' : String(now.value || '').trim() } };
+    }
+  }
+  return never();
+}
+
+// After the person's click or typing: wait until the front window and the window list stop changing (~600 ms, at most
+// 2.5 s), so the next look sees the menu, the Save As window or the new page (the owner: right-click, then Save image as).
+// -> the last screen signature (null: cannot tell).
+async function settleScreen(ctx, quietMs = 600, maxMs = 2500) {
+  const t0 = Date.now();
+  let last = null, since = t0;
+  while (Date.now() - t0 < maxMs) {
+    const sig = await screenSig(ctx);
+    if (!sig) return last; // cannot tell: go on
+    if (sig !== last) { last = sig; since = Date.now(); } else if (Date.now() - since >= quietMs) return last;
+    await ctx.sleep(150);
+  }
+  return last;
+}
+async function screenSig(ctx) {
+  const s = await Promise.all([ctx.native.call('foreground', {}, 2000), ctx.native.call('windows', {}, 3000)]).catch(() => null);
+  if (!s || !s[0]) return null;
+  return JSON.stringify([s[0].hwnd, s[0].title, ((s[1] && s[1].windows) || []).map((w) => [w.hwnd, w.title, !!w.minimized])]);
+}
+
 async function guideUser(ctx, args) {
   const instruction = String(args.instruction || '').trim();
   if (!instruction) return 'ERROR: instruction is empty.';
+  if (CHAINED.test(instruction)) {
+    return 'ERROR: one thing per step. This instruction asks for more than one action. Split it: guide_user for the first thing only; ' +
+      'after it is done and you have looked at the new screen, the next one.';
+  }
   let rect = null, el = null;
   if (args.element_id != null) {
     el = elById(ctx, args.element_id);
@@ -445,20 +549,26 @@ async function guideUser(ctx, args) {
   } else if (num(args.x) && num(args.y) && ctx.obs && ctx.obs.img) {
     const w = num(args.w) && args.w > 4 ? args.w : 90, h = num(args.h) && args.h > 4 ? args.h : 60;
     rect = imageRectToPhysical(ctx.obs.img, [args.x - w / 2, args.y - h / 2, w, h]);
-    el = elementAt(ctx, rect[0] + rect[2] / 2, rect[1] + rect[3] / 2);
+    el = snapEl(ctx, toPhysical(ctx.obs.img, args.x, args.y), instruction);
+    if (el) { snapNote(ctx, el); rect = el.rect; } else el = elementAt(ctx, rect[0] + rect[2] / 2, rect[1] + rect[3] / 2);
   }
   // The person does it, but the helper's ring and voice must never lead them to a remote tool, a gift card,
   // a money exit or a security switch (6.1 #1, R6): the never-rules apply to guided steps too.
   const g = safe(() => ctx.guardian.hardCheck({ tool: 'guide_user', args: { ...args, instruction } }, gctxOf(ctx, el)));
   if (g && g.verdict === 'refuse') return refused(ctx, g);
-  const waitClick = args.wait_for !== 'done' && !!rect;
+  const rightAsked = RIGHT_CLICK.test(instruction);
+  const typing = !!rect && !rightAsked && (TYPING.test(instruction) || (args.wait_for === 'done' && !!el && EDITABLE.test(el.role || '')));
+  // A right-click is one click, whatever wait_for says (the owner's right-click on a picture was never noticed).
+  const waitClick = !!rect && !typing && (args.wait_for !== 'done' || rightAsked);
   record(ctx, instruction, 'guide_user', elName(el));
   if (rect) ctx.ui.highlight(rect, instruction);
   ctx.status({ state: 'waiting', step: ctx.steps.length, totalSteps: ctx.totalSteps, label: instruction });
-  const choices = waitClick ? ['I did it', 'Please do it for me', 'I need help'] : ['I did it', 'I need help'];
-  const askW = Promise.resolve().then(() => ctx.ui.ask({ question: instruction, choices, kind: 'choice' }))
+  const choices = waitClick ? [GREEN, 'Please do it for me', 'I need help'] : [GREEN, 'I need help'];
+  const askW = Promise.resolve().then(() => ctx.ui.ask({ question: instruction, choices, kind: 'choice', green: GREEN }))
     .then((a) => ({ answer: String(a == null ? '' : a).trim() }), () => ({ closed: true }));
   let out;
+  // The screen before their click: a click outside the ring that changed it (a new window) is not a miss.
+  const sig0 = waitClick ? screenSig(ctx).catch(() => null) : null;
   if (waitClick) {
     const clickW = ctx.native.call('wait_click', { timeoutMs: 180000, rect }, 190000)
       .then((c) => ({ click: c || {} }), () => ({ clickFailed: true }));
@@ -473,22 +583,50 @@ async function guideUser(ctx, args) {
     // Answered in words: the mouse hook must not outlive the step (up to 3 minutes otherwise).
     else await Promise.resolve().then(() => ctx.native.call('cancel_wait', {}, 3000)).catch(() => {});
   } else {
-    out = await waiting(ctx, askW);
+    // A typing (or choosing) step: watched in the background, the question stays the fallback. The hooks end with the step.
+    let answered = false;
+    const secret = !!(el && (el.password || el.isPassword || el.private || el.secret)) || SECRET_WORDS.test(instruction);
+    const typedW = rect ? watchTyping(ctx, rect, typing, secret, () => answered) : never();
+    out = await waiting(ctx, Promise.race([askW, typedW]));
+    answered = true;
+    if (out.typed) safe(() => ctx.ui.cancelAsk());
+    if (rect) await Promise.resolve().then(() => ctx.native.call('cancel_wait', {}, 3000)).catch(() => {});
   }
   safe(() => ctx.ui.clearOverlay());
   ctx.check();
+  let settled = null;
+  if ((out.click && out.click.clicked) || out.typed) { settled = await settleScreen(ctx); ctx.check(); }
+  if (out.typed) {
+    ctx.stuck = 0;
+    const v = out.typed.value;
+    return 'The person typed in the box' + (v ? ': "' + clip(v, 120) + '"' : out.typed.secret ? ' (a private box, so I did not read it)' : '') +
+      (out.typed.enter ? ' and pressed Enter' : '') + '. Look at the new screen to check it, then show the next step.';
+  }
   if (out.click) {
     const c = out.click;
     if (!c.clicked) { ctx.stuck = 2; return 'The person did not click within 3 minutes. Ask gently whether they need help.'; }
-    if (c.inRect) { ctx.stuck = 0; return 'The person clicked inside the highlighted area. Look at the new screen to check it worked, then show the next step.'; }
-    ctx.stuck = (ctx.stuck || 0) + 1;
+    const btn = c.button && c.button !== 'left' ? ' with the ' + c.button + ' mouse button' : '';
+    if (c.inRect) {
+      ctx.stuck = 0;
+      if (rightAsked && c.button === 'left') {
+        return 'The person clicked inside the highlighted area, but with the LEFT mouse button, and this step was a right-click. ' +
+          'Look at the new screen: if the menu did not open, ask them kindly to click it with the RIGHT mouse button.';
+      }
+      return 'The person clicked inside the highlighted area' + btn + '. Look at the new screen to check it worked, then show the next step.';
+    }
+    // Not automatically a miss: it may have opened the menu or window the step was for. Nothing changed: a miss (two
+    // in a row and Barnaby does it, agent.js).
+    const before = await sig0;
+    if (!before || !settled || before === settled) ctx.stuck = (ctx.stuck || 0) + 1;
+    const hit = elementAt(ctx, c.x, c.y);
     const p = ctx.obs && ctx.obs.img && num(c.x) ? toImage(ctx.obs.img, c.x, c.y) : null;
-    return 'The person clicked outside the highlighted area' + (p ? ', at x=' + p.x + ', y=' + p.y + ' (screenshot pixels).' : '.') +
-      ' Look at the screen and guide again kindly if needed.';
+    return 'The person clicked outside the highlighted area' + btn + (hit ? ', on [' + hit.id + '] "' + elName(hit) + '"' : '') +
+      (p ? ' at x=' + p.x + ', y=' + p.y + ' (screenshot pixels)' : '') + '. Look at the new screen first: if that already did the step ' +
+      'or opened what it needed, go on; only if the step still needs doing, guide again kindly.';
   }
   if (out.closed) return 'The question was closed without an answer.';
   const a = out.answer;
-  if (/^i did it$/i.test(a)) { ctx.stuck = 0; return 'The person said they did it. Check the new screen.'; }
+  if (DID_IT.test(a)) { ctx.stuck = 0; return 'The person said they did it. Check the new screen.'; }
   if (/^please do it for me$/i.test(a)) ctx.stuck = 2; // they asked: Barnaby does the rest of this task (agent.js)
   if (/^please do it for me$/i.test(a) && rect) {
     const p = center(rect);
@@ -633,8 +771,11 @@ async function zoom(ctx, args) {
     label = '"' + elName(el) + '"';
   } else if (num(args.x) && num(args.y) && img) {
     const w = num(args.w) && args.w > 20 ? args.w : 400, h = num(args.h) && args.h > 20 ? args.h : 260;
-    rect = imageRectToPhysical(img, [args.x - w / 2, args.y - h / 2, w, h]);
-    label = 'the area around x=' + Math.round(args.x) + ', y=' + Math.round(args.y);
+    const s = snapEl(ctx, toPhysical(img, args.x, args.y), '');
+    const c = s ? toImage(img, s.rect[0] + s.rect[2] / 2, s.rect[1] + s.rect[3] / 2) : { x: args.x, y: args.y }; // centred on the item it means
+    if (s) snapNote(ctx, s);
+    rect = imageRectToPhysical(img, [c.x - w / 2, c.y - h / 2, w, h]);
+    label = s ? '"' + elName(s) + '"' : 'the area around x=' + Math.round(args.x) + ', y=' + Math.round(args.y);
   } else return 'ERROR: give element_id, or x and y.';
   // Clamp to the observed monitor (a screen left of or above the main one has negative coordinates). Its corner, not
   // the picture's: the picture is only the work area, and a taskbar item on the top or left lies outside it.
@@ -683,7 +824,7 @@ const SETTING_KEYS = {
     return { value: clamped };
   },
   speechRate(v, cur) {
-    cur = +cur || 0.9;
+    cur = +cur || 1.0; // Normal (config.js)
     let next = cur;
     if (/^slow/i.test(v)) next = round1(cur - 0.1);
     else if (/^fast|^quick/i.test(v)) next = round1(cur + 0.1);
@@ -783,8 +924,11 @@ async function execute(call, ctx) {
   const positional = POSITIONAL.has(name) && (args.element_id != null || num(args.x));
   if (!ACTS.has(name) || (positional && ctx.screenChanged)) ctx.saidYes = false; // a confirm-card yes is for the very next action only
   if (positional && ctx.screenChanged) return 'SKIPPED: the screen may have changed after the last action. Look at the new screen first.';
-  const res = await EXEC[name](ctx, args);
+  ctx.snapNote = null;
+  let res = await EXEC[name](ctx, args);
   if (CHANGES_SCREEN.has(name)) ctx.screenChanged = true;
+  if (ctx.snapNote && typeof res === 'string') res = ctx.snapNote + ' ' + res; // x,y snapped to a listed item (snapEl)
+  ctx.snapNote = null;
   return res;
 }
 

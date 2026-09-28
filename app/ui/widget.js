@@ -1,6 +1,6 @@
 // Helper widget: collapsed "Help" pill / expanded panel (UX 11.2, 11.3, 9.x), docked as the right third of the
 // screen or floating in a corner. Talks to main only through window.helper (preload). In a normal browser
-// ?demo=collapsed|busy|chat|choice|confirm|text|listening|thinking|looking|plan|running shows a scripted state
+// ?demo=collapsed|busy|chat|choice|guide|confirm|text|listening|thinking|looking|plan|running shows a scripted state
 // (&docked=440 previews the docked panel at that width); the microphone and the voice are never used in demo mode.
 (function () {
   'use strict';
@@ -14,7 +14,7 @@
   const q = new URLSearchParams(location.search);
 
   // ---------- settings ----------
-  let settings = { muted: false, speechRate: 0.9, voiceName: '', textScale: 1 };
+  let settings = { muted: false, speechRate: 1.0, voiceName: '', textScale: 1 };
   function applySettings(s) {
     Object.assign(settings, s || {});
     const scale = Number(q.get('scale')) || Number(settings.textScale) || 1;
@@ -25,9 +25,9 @@
     fitCompact();
   }
   // Speaking speed, one press away (the owner: "a toggle to speaking speed"). Same steps as Settings.
-  const SPEEDS = [0.8, 0.9, 1.0]; // Slower, Normal, Faster: same list in settings.js (test/setup.test.js checks)
-  const speedIdx = (r) => { r = +r || 0.9; return r < 0.85 ? 0 : r > 0.95 ? 2 : 1; }; // a rate set by voice (0.7, 1.1) shows as its nearest step
-  const SPEED_SAID = ['All right, I’ll talk more slowly.', 'All right, back to my normal speed.', 'All right, I’ll talk a little faster.'];
+  const SPEEDS = [0.9, 1.0, 1.1]; // Slow, Normal, Faster: same list in settings.js (test/setup.test.js checks)
+  const speedIdx = (r) => { r = +r || 1.0; return r < 0.95 ? 0 : r > 1.05 ? 2 : 1; }; // a rate set by voice (0.7, 0.8) shows as its nearest step
+  const SPEED_SAID = ['All right, I’ll talk slowly.', 'All right, back to my normal speed.', 'All right, I’ll talk faster.'];
   function renderSpeed() {
     const row = $('speedRow');
     if (!row) return;
@@ -78,7 +78,8 @@
   let looked = false; // screenshots were taken during this task: the eye note stays until he is idle (04_safety 7.2)
   const ICON = (name) => (window.icon ? window.icon(name) : '');
   function renderStatus() {
-    const v = S.view(localStatus || mainStatus, NAME);
+    const i = lastHelper();
+    const v = S.view(localStatus || mainStatus, NAME, openAsk ? openAsk.question : i >= 0 ? lines[i].text : '');
     if (v.state === 'looking') looked = true;
     if (v.state === 'idle') looked = false;
     const card = $('statusCard');
@@ -314,14 +315,17 @@
         wrap.append(lab, inp);
         box.append(wrap, note, ok, choiceBtn('I’m not sure', 'I’m not sure'));
       } else if (kind === 'done') {
-        if (choices.length) choices.forEach((c, i) => box.append(choiceBtn(c, c, i === 0 ? 'primary' : '')));
+        if (choices.length) choices.forEach((c, i) => box.append(choiceBtn(c, c, c === a.green ? 'green' : i === 0 ? 'primary' : '')));
         else box.append(choiceBtn('I did it', 'done', 'primary'));
       } else {
         // Short answers sit two to a row so more of them fit without scrolling.
         const scale = Number(getComputedStyle(document.documentElement).getPropertyValue('--ui-scale')) || 1;
         const two = choices.length >= 2 && choices.every((c) => c.length <= Math.floor(12 / scale));
         box.classList.toggle('two', two);
-        choices.forEach((c) => box.append(choiceBtn(c, c)));
+        // a.green (guide_user's "I did it, but Barnaby didn't notice"): first, as the big green button
+        const green = choices.includes(a.green) ? a.green : null;
+        if (green) box.append(choiceBtn(green, green, 'green full'));
+        choices.forEach((c) => { if (c !== green) box.append(choiceBtn(c, c)); });
         if (!choices.some((c) => /not sure/i.test(c))) {
           box.append(choiceBtn('I’m not sure', 'I’m not sure', choices.length % 2 ? '' : 'full'));
         }
@@ -521,7 +525,7 @@
     const again = V.replay && V.replay(lines[i].text); // the natural voice again, from memory
     if (again) again.catch(() => {});
     else if (H.sayLine) H.sayLine(lines[i].text, { again: true }); // cut short or not kept: main makes it again, a little slower
-    else V.speak(lines[i].text, { rate: (Number(settings.speechRate) || 0.9) - 0.05, voiceName: settings.voiceName }).catch(() => {});
+    else V.speak(lines[i].text, { rate: (Number(settings.speechRate) || 1.0) - 0.05, voiceName: settings.voiceName }).catch(() => {});
   }
 
   // ---------- "More below" (no tiny scrollbar as the only way down, UX 3.8) ----------
@@ -628,7 +632,7 @@
   }
 
   function runDemo(which) {
-    if (!['collapsed', 'busy', 'chat', 'choice', 'text', 'confirm', 'listening', 'thinking', 'looking', 'plan', 'running'].includes(which)) return; // stub-only scenario
+    if (!['collapsed', 'busy', 'chat', 'choice', 'guide', 'text', 'confirm', 'listening', 'thinking', 'looking', 'plan', 'running'].includes(which)) return; // stub-only scenario
     const line = (text) => onSay({ id: null, text, speak: false });
     const PLAN = [{ text: 'Open Outlook', state: 'done' }, { text: 'Start a new email', state: 'done' },
       { text: 'Add the 2 photos', state: 'now' }, { text: 'Write a short note', state: 'next' }, { text: 'You press Send', state: 'next' }];
@@ -668,6 +672,11 @@
         const qn = 'Which email do you use: Gmail, Outlook, AOL, or Yahoo?';
         line(qn);
         onAsk({ requestId: 'demo-choice', question: qn, choices: ['Gmail', 'Outlook', 'AOL', 'Yahoo'], kind: 'choice' });
+      } else if (which === 'guide') { // "Show me how": the ring waits for the click; the green button is the way out
+        const qn = 'Click the blue “New mail” button, top left.', did = 'I did it, but Barnaby didn’t notice';
+        onStatus({ state: 'waiting', step: 2, totalSteps: 5, label: qn });
+        line(qn);
+        onAsk({ requestId: 'demo-guide', question: qn, choices: [did, 'Please do it for me', 'I need help'], kind: 'choice', green: did });
       } else if (which === 'text') {
         onStatus({ state: 'waiting' });
         const qn = 'What would you like the note to say? Or I can write a short one for you.';
@@ -702,7 +711,7 @@
     return {
       isDemo: true,
       product: {}, // the name lives only in src/product.js; demo-stub.js supplies it
-      getSettings: () => Promise.resolve({ muted: true, speechRate: 0.9, textScale: 1, family: { name: 'Anna', phone: '5550142' } }),
+      getSettings: () => Promise.resolve({ muted: true, speechRate: 1.0, textScale: 1, family: { name: 'Anna', phone: '5550142' } }),
       saveSettings: log('saveSettings'), ask: log('ask'), answer: log('answer'), stop: log('stop'), goHome: log('goHome'),
       transcribe: () => Promise.resolve({ text: 'Help me send some photos to Anne Marie.' }),
       listenOffline: () => Promise.resolve({ text: '' }), spoken: log('spoken'), overlayDismiss: log('overlayDismiss'),

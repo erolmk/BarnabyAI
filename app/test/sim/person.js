@@ -75,7 +75,7 @@ class Person {
     const ch = q.choices;
     if (q.kind === 'confirm') { await sleep(400); return this.confirm(q); }
     if (ch.includes('Please do it for me')) return PENDING;
-    if (ch.includes('I did it')) return this.doStep(q.question, this.lastHighlight && this.lastHighlight.rect);
+    if (ch.some((c) => /^I did it/.test(c))) return this.doStep(q.question, this.lastHighlight && this.lastHighlight.rect);
     await sleep(300);
     return this.answer(q);
   }

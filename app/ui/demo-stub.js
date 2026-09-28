@@ -41,7 +41,7 @@
       allow_fallbacks: true, zdr: true, data_collection: 'deny', require_parameters: true },
     dockPanel: true, allowCommands: true,
     sttModel: 'google/gemini-3.1-flash-lite', jevModel: '~typesafe/jev-latest',
-    ttsVoice: 'en-US-Ethan:MAI-Voice-2', voiceName: '', speechRate: 0.9, muted: false, textScale: 1.0, mode: 'do',
+    ttsVoice: 'en-US-Ethan:MAI-Voice-2', voiceName: '', speechRate: 1.0, muted: false, textScale: 1.0, mode: 'do',
     email: { provider: 'outlook', address: 'rose.kowalski@outlook.com' },
     photos: { provider: 'icloud' },
     video: { provider: 'zoom' },

@@ -102,7 +102,7 @@ test('Anne Marie flow in together mode: narrate before acting, confirm card, per
   assert.match(h.toolResults(7).at(-1), /clicked inside the highlighted area/);
 
   // photo step asked the person (no highlight needed)
-  assert.ok(h.ui.asks.some((a) => /find the photo/.test(a.question) && a.choices.includes('I did it')));
+  assert.ok(h.ui.asks.some((a) => /find the photo/.test(a.question) && a.choices[0] === "I did it, but Barnaby didn't notice" && a.green === a.choices[0]));
 
   // memory + settings updated, summary spoken, lesson saved
   assert.ok(h.memory.all().includes('Email: Gmail'));
@@ -418,14 +418,14 @@ test('image <-> physical coordinates with factor 2.25 and an origin offset', asy
   const elements = [{ id: 1, name: 'Compose', role: 'Button', rect: [190, 545, 270, 99] }, { id: 9, name: 'Off screen', role: 'Button', rect: [5000, 5000, 10, 10] }];
   const h = makeAgent({
     nativeOpts: { img, elements },
-    script: [assistant(tc('click', { x: 100, y: 200, explain: 'Clicking here.' })), assistant(tc('guide_user', { x: 40, y: 20, w: 20, h: 10, instruction: 'Click here.' }))],
+    script: [assistant(tc('click', { x: 400, y: 200, explain: 'Clicking here.' })), assistant(tc('guide_user', { x: 40, y: 20, w: 20, h: 10, instruction: 'Click here.' }))],
   });
   await h.agent.runTask('click it');
   const obs = h.llm.calls[0].messages.find((m) => Array.isArray(m.content)).content[0].text;
   assert.match(obs, /\[1\] Button "Compose" @\(40,220 120x44\)/);
   assert.doesNotMatch(obs, /Off screen/);
-  assert.deepEqual(h.native.calls.find((c) => c.cmd === 'click').args, { x: 325, y: 500, button: 'left', double: false });
-  assert.deepEqual(h.ui.highlights[0].rect, [301, 476, 48, 48], 'own click is ringed first (UX: show where before acting)');
+  assert.deepEqual(h.native.calls.find((c) => c.cmd === 'click').args, { x: 1000, y: 500, button: 'left', double: false }, 'no listed item near: the point as given');
+  assert.deepEqual(h.ui.highlights[0].rect, [976, 476, 48, 48], 'own click is ringed first (UX: show where before acting)');
   assert.deepEqual(h.ui.highlights[h.ui.highlights.length - 1].rect, [168, 84, 45, 23]);
 });
 
@@ -736,7 +736,7 @@ test('update_settings: "smaller" lowers textScale by 0.2 and Barnaby only says d
   assert.match(h3.toolResults(1)[0], /NOT ALLOWED: scamShield, allowCommands/);
   assert.match(h3.toolResults(1)[0], /Settings/);
   assert.equal(h3.config.get().scamShield, true, 'scamShield untouched');
-  assert.equal(h3.config.get().speechRate, 0.8, 'speechRate slowed 0.9 -> 0.8');
+  assert.equal(h3.config.get().speechRate, 0.9, 'speechRate slowed 1.0 (Normal) -> 0.9 (Slow)');
 });
 
 test('run_command: read-only runs, changing runs without a card, hard refusals never run, events emitted', async () => {
@@ -824,7 +824,7 @@ test('thinking policy: first step high, routine low, always/never override', asy
 
   const never = makeAgent({ settings: { thinking: 'never' }, script: two() });
   await never.agent.runTask('scroll a bit');
-  assert.ok(never.llm.calls.filter((c) => c.tools).every((c) => c.reasoningEffort === 'low'));
+  assert.ok(never.llm.calls.filter((c) => c.tools).every((c) => c.reasoningEffort === 'none'));
 
   // a surprise (an error result) makes the next step think hard again
   const surprise = makeAgent({ settings: { thinking: 'auto' }, script: [
@@ -998,6 +998,12 @@ test("errors say the real cause: offline, no credit, bad key, busy, slow", async
   await assert.rejects(llm.chat({ apiKey: "k", model: "m", messages: [], fetchImpl: hang }), (e) => e.kind === "timeout");
   assert.equal(tries, 2, "a hung service is retried once, not twice");
   await assert.rejects(llm.chat({ apiKey: "k", model: "m", messages: [], retries: 0, fetchImpl: async () => { throw new TypeError("fetch failed"); } }), (e) => e.kind === "offline");
+
+  // reasoning: 'none' switches thinking off (DeepSeek thinks by default), an effort passes through, null sends nothing
+  const sent = [];
+  const cap = async (url, init) => { sent.push(JSON.parse(init.body)); return reply(200, ok); };
+  for (const reasoningEffort of ["none", "low", null]) await llm.chat({ apiKey: "k", model: "m", messages: [], reasoningEffort, fetchImpl: cap });
+  assert.deepEqual(sent.map((b) => b.reasoning), [{ enabled: false }, { effort: "low" }, undefined]);
 });
 
 test("is this a scam: never vouches, real verdict first, page text cannot fake it, the card stays", async () => {
@@ -1023,6 +1029,8 @@ test("a window on the second screen: that monitor is captured and the brain is t
   await h.agent.runTask("email Anne Marie");
   assert.equal(h.native.calls.find((c) => c.cmd === "screenshot").args.hwnd, F.GMAIL_WINDOW.hwnd);
   assert.match(JSON.stringify(h.llm.calls[0].messages.at(-1).content), /second screen/);
+  assert.match(JSON.stringify(h.llm.calls[0].messages.at(-1).content), /ring shows there too/, "the overlay is rebuilt on the ring's screen");
+  assert.doesNotMatch(JSON.stringify(h.llm.calls[0].messages.at(-1).content), /cannot show|win\+shift\+left/);
 });
 
 test("the screenshot is only the work area of the window's screen, minus a docked panel that is no AppBar", async () => {
@@ -1049,6 +1057,81 @@ test("second screen is judged by the monitor: a work area below a top taskbar is
   const left = makeAgent({ nativeOpts: { img: { ...F.IMG, originX: -2880 }, workArea: { rect: [-2880, 0, 2880, 1548], monitor: [-2880, 0, 2880, 1620] } }, script: [assistant(tc("done", { summary: "ok" }))] });
   await left.agent.runTask("email Anne Marie");
   assert.match(JSON.stringify(left.llm.calls[0].messages.at(-1).content), /second screen/);
+});
+
+// The owner's 2026-09-28 session: primary 1920x1080 (panel docked, work area 1280 wide), laptop screen below it.
+const PRIMARY = { rect: [0, 0, 1280, 1032], monitor: [0, 0, 1920, 1080] };
+const LAPTOP = { rect: [-441, 1080, 2880, 1728], monitor: [-441, 1080, 2880, 1800] };
+const IMG1 = { width: 1280, height: 1032, factor: 1, originX: 0, originY: 0 };
+const COMPOSE = [
+  { id: 3, name: "To recipients", role: "ComboBox", rect: [300, 455, 700, 26], enabled: true },
+  { id: 4, name: "Subject", role: "Edit", rect: [300, 493, 700, 26], enabled: true },
+  { id: 5, name: "Message Body", role: "Edit", rect: [300, 530, 700, 400], enabled: true },
+];
+
+test("guide_user x,y snaps to the listed item it means; a typing step drops the label after the click in the ring", async () => {
+  const run = async (instruction, x, y) => {
+    const h = makeAgent({
+      nativeOpts: { img: IMG1, elements: COMPOSE, workArea: PRIMARY },
+      uiOpts: { answer: () => new Promise((r) => setTimeout(() => r("I did it"), 30)) },
+      script: [assistant(tc("guide_user", { x, y, w: 500, h: 30, instruction, wait_for: "done" }))],
+    });
+    await h.agent.runTask("email Rafi", { mode: "teach" });
+    return h;
+  };
+  // The owner's call: y=506 is on the Subject line, but the words name the To box.
+  const h = await run("Please click in the long box next to To, and type the letters R-a-f-i.", 560, 506);
+  assert.deepEqual(h.ui.highlights[0].rect, COMPOSE[0].rect);
+  assert.match(h.toolResults(1)[0], /^I used the listed item \[3\] "To recipients"/);
+  assert.deepEqual(h.ui.highlights[1], { rect: COMPOSE[0].rect, label: "" }, "clicked inside: the label goes, the ring stays");
+  assert.ok(h.nativeCmds().includes("cancel_wait"), "the mouse hook ends with the step");
+  // No name: the item under the point; nothing listed near: the picture rect as given.
+  assert.deepEqual((await run("Please click in this box and type your words.", 560, 506)).ui.highlights[0].rect, COMPOSE[1].rect);
+  const far = await run("Please click here.", 1200, 100);
+  assert.deepEqual(far.ui.highlights[0].rect, [950, 85, 500, 30]);
+  assert.doesNotMatch(far.toolResults(1)[0], /listed item/);
+});
+
+test("guide_user asks for one action per step", async () => {
+  const h = makeAgent({
+    nativeOpts: { img: IMG1, elements: COMPOSE, workArea: PRIMARY },
+    script: [
+      assistant(tc("guide_user", { element_id: 4, instruction: "Please type a short subject for your email in the Subject box, then click into the big message area below and write your message.", wait_for: "done" })),
+      assistant(tc("guide_user", { element_id: 4, instruction: "Please type a subject in the Subject box and click the message area.", wait_for: "done" })),
+      assistant(tc("guide_user", { element_id: 4, instruction: "Please click in the Subject box and type a short subject.", wait_for: "done" })),
+    ],
+  });
+  await h.agent.runTask("email Rafi", { mode: "teach" });
+  assert.match(h.toolResults(1)[0], /^ERROR: one thing per step/);
+  assert.match(h.toolResults(2).at(-1), /^ERROR: one thing per step/);
+  assert.match(h.toolResults(3).at(-1), /said they did it/, "click the box and type is one step");
+  assert.equal(h.ui.highlights.filter((x) => x.label).length, 1, "only the one-action step was pointed at");
+});
+
+test("a window coming to the front on the other screen: the look stays on the task's window and screen", async () => {
+  const gmail = { ...F.GMAIL_WINDOW, rect: [0, 0, 1280, 1032], minimized: false };
+  const notes = { hwnd: 700, title: "Notes", process: "notepad", pid: 7000, rect: [-441, 1080, 2880, 1700], minimized: false };
+  const run = async (second) => {
+    let n = 0;
+    const h = makeAgent({
+      nativeOpts: {
+        img: IMG1, elements: COMPOSE, workArea: (a) => (a.hwnd === 700 ? LAPTOP : PRIMARY),
+        windows: () => ({ windows: ++n === 1 ? [{ ...gmail, foreground: true }, notes] : second }),
+      },
+      script: [assistant(tc("guide_user", { element_id: 3, instruction: "Please click the To box.", wait_for: "click" }))],
+    });
+    const logs = [];
+    h.agent.log = (...a) => logs.push(a.join(" "));
+    await h.agent.runTask("email Rafi", { mode: "teach" });
+    return { h, logs, shots: h.native.calls.filter((c) => c.cmd === "screenshot").map((c) => c.args.hwnd) };
+  };
+  const s = await run([gmail, { ...notes, foreground: true }]);
+  assert.deepEqual(s.shots, [100, 100], "both looks capture the task window's screen");
+  assert.deepEqual(s.h.native.calls.filter((c) => c.cmd === "elements" && c.args.taskbar).map((c) => c.args.hwnd), [100, 100], "and its taskbar");
+  assert.ok(s.logs.includes("[look] window chrome screen 0,0,1920,1080 region 0,0,1280,1032 factor 1"), s.logs.join("\n"));
+  assert.ok(s.logs.some((l) => /^\[look\] .*stayed on the task window/.test(l)));
+  assert.deepEqual((await run([{ ...gmail, minimized: true }, { ...notes, foreground: true }])).shots, [100, 700], "the task window was minimized: follow");
+  assert.deepEqual((await run([gmail, { ...notes, hwnd: 701, foreground: true }])).shots, [100, 701], "a new window: follow");
 });
 
 test("the taskbar comes as text after the window's items; its ids work for zoom, click and guide_user", async () => {
@@ -1093,7 +1176,7 @@ test("Stop while routing drops the request; a guide answered in words ends its m
   const g = makeAgent({
     script: [assistant(tc("guide_user", { element_id: 1, instruction: "Click the red Compose button at the top left." })), assistant(tc("done", { summary: "ok" }))],
     nativeOpts: { waitClick: () => new Promise(() => {}) }, // the person answers on the panel instead
-    uiOpts: { answer: (a) => (a.choices && a.choices.includes("I did it") ? "I did it" : "yes") },
+    uiOpts: { answer: (a) => (a.green || "yes") },
   });
   await g.agent.runTask("teach me email", { mode: "teach" });
   const cmds = g.native.calls.map((c) => c.cmd);

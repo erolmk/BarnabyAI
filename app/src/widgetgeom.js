@@ -81,4 +81,23 @@ function needsFit(win, panel, minW = 400, minH = 300) {
   return overlap > 8 && vert > 8;
 }
 
-module.exports = { PILL_W, PILL_H, PANEL_W, PANEL_H, MARGIN, DOCK_MIN, DOCK_MAX, size, nearestCorner, atCorner, resizeFrom, bounds, dock, needsFit };
+// The ring's screen and where the ring sits in the overlay page there. The overlay covers one display and is laid out
+// in that display's own DIP, so a physical rect converts with THAT display's scaleFactor, never another screen's (the
+// owner's 100% screen above a 200% laptop: the label came back double size and the ring off target).
+// displays: [{id, bounds (DIP), scaleFactor, phys: {x, y} (its top-left in physical px)}]; rect: physical [x, y, w, h].
+// -> {display, rect: overlay-page [x, y, w, h]} for the display holding the rect's centre (else the nearest), or null.
+function ringOnDisplay(displays, rect) {
+  if (!Array.isArray(rect) || rect.length !== 4 || !rect.every(Number.isFinite)) return null;
+  const [x, y, w, h] = rect, cx = x + w / 2, cy = y + h / 2;
+  let d = null, best = Infinity;
+  for (const e of displays || []) {
+    const s = e.scaleFactor || 1, W = e.bounds.width * s, H = e.bounds.height * s;
+    const dist = Math.hypot(Math.max(e.phys.x - cx, 0, cx - (e.phys.x + W)), Math.max(e.phys.y - cy, 0, cy - (e.phys.y + H)));
+    if (dist < best) { d = e; best = dist; }
+  }
+  if (!d) return null;
+  const s = d.scaleFactor || 1;
+  return { display: d, rect: [Math.round((x - d.phys.x) / s), Math.round((y - d.phys.y) / s), Math.round(w / s), Math.round(h / s)] };
+}
+
+module.exports = { ringOnDisplay, PILL_W, PILL_H, PANEL_W, PANEL_H, MARGIN, DOCK_MIN, DOCK_MAX, size, nearestCorner, atCorner, resizeFrom, bounds, dock, needsFit };

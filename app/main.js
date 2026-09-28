@@ -122,7 +122,10 @@ function createWidget() {
   widgetWin = new BrowserWindow({
     ...geom.bounds(null, false, screen.getPrimaryDisplay().workArea), frame: false, transparent: true, resizable: false, maximizable: false,
     minimizable: false, fullscreenable: false, skipTaskbar: true, alwaysOnTop: true, hasShadow: false,
-    show: false, title: product.assistantName, backgroundColor: '#00000000', webPreferences: WEB,
+    show: false, title: product.assistantName, backgroundColor: '#00000000',
+    // never paused as "hidden": Windows can count the unfocused panel as covered (the full-screen overlay sits above
+    // it), and a paused page freezes the "Please wait" dots mid-task (the owner: "it just stays stuck")
+    webPreferences: { ...WEB, backgroundThrottling: false },
   });
   widgetWin.setAlwaysOnTop(true, 'screen-saver');
   // Keep our own UI out of the agent's screenshots (also hides it from screen sharing); not while recording.
@@ -241,8 +244,13 @@ function cleanStaleDock() {
     .then(() => { try { fs.rmSync(UD(DOCK_FILE), { force: true }); } catch (_) {} });
 }
 
-function createOverlay() {
-  const d = screen.getPrimaryDisplay();
+// One overlay page per display, made on it: Electron moving a window between screens of different scaling keeps the
+// old screen's zoom and origin (the owner's label came back double size, pointing at the top edge). placeOverlay makes
+// a new one instead of moving it. Messages wait for the page to load (overlayReady).
+let overlayOn = null, overlayReady = Promise.resolve(); // {id, scale} of the display the overlay was made for
+function createOverlay(d = screen.getPrimaryDisplay()) {
+  if (alive(overlayWin)) overlayWin.destroy();
+  overlayOn = { id: d.id, scale: d.scaleFactor };
   overlayWin = new BrowserWindow({
     ...d.bounds, frame: false, transparent: true, resizable: false, movable: false, focusable: false,
     skipTaskbar: true, alwaysOnTop: true, hasShadow: false, show: false, fullscreenable: false,
@@ -253,7 +261,8 @@ function createOverlay() {
   overlayWin.setIgnoreMouseEvents(true);
   overlayWin.setMenu(null);
   watchRenderer(overlayWin, 'overlay');
-  overlayWin.loadFile(P('ui', 'overlay.html'));
+  if (!sameRect(overlayWin.getBounds(), d.bounds)) overlayWin.setBounds(d.bounds); // made on that screen: a same-screen fix
+  overlayReady = overlayWin.loadFile(P('ui', 'overlay.html')).catch((e) => log('[overlay] load', e.message));
   overlayWin.on('close', (e) => { if (!quitting) e.preventDefault(); });
 }
 
@@ -279,30 +288,19 @@ function showLauncher() {
 }
 function hideLauncher() { if (alive(launcherWin) && !launcherWin.isMinimized()) launcherWin.minimize(); }
 
-// Physical screen px (native helper) -> overlay-local DIP.
-function toDip(rect) {
-  const [x, y, w, h] = rect;
-  let r;
-  try { r = screen.screenToDipRect(null, { x, y, width: w, height: h }); } catch (_) {
-    const sf = screen.getPrimaryDisplay().scaleFactor || 1;
-    r = { x: x / sf, y: y / sf, width: w / sf, height: h / sf };
-  }
-  const ob = alive(overlayWin) ? overlayWin.getBounds() : { x: 0, y: 0 };
-  return [Math.round(r.x - ob.x), Math.round(r.y - ob.y), Math.round(r.width), Math.round(r.height)];
-}
-
 // The overlay covers one display: the one holding the ring or the warned-about window (second screens, WR-1).
-function placeOverlay(physRect) {
-  if (!alive(overlayWin)) return;
-  let d = screen.getPrimaryDisplay();
-  if (Array.isArray(physRect) && physRect[2] > 0 && physRect[3] > 0) {
-    const [x, y, width, height] = physRect;
-    try { d = screen.getDisplayMatching(screen.screenToDipRect(null, { x, y, width, height })); } catch (_) { /* primary */ }
-  }
-  const b = overlayWin.getBounds(), t = d.bounds;
-  if (b.x === t.x && b.y === t.y && b.width === t.width && b.height === t.height) return;
-  overlayWin.setBounds(t);
-  overlayWin.setBounds(t); // twice: a move between displays of different scaling sizes the first one wrongly
+// Returns {display, rect: the physical rect in that overlay page's px} (src/widgetgeom.js), or null (primary screen).
+function placeOverlay(rect) {
+  if (!alive(overlayWin)) return null;
+  const list = screen.getAllDisplays().map((d) => {
+    let phys = d.bounds;
+    try { const p = physRect(d.bounds); phys = { x: p[0], y: p[1] }; } catch (_) {}
+    return { id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor || 1, phys, d };
+  });
+  const at = geom.ringOnDisplay(list, rect);
+  const d = at ? at.display.d : screen.getPrimaryDisplay();
+  if (!overlayOn || overlayOn.id !== d.id || overlayOn.scale !== d.scaleFactor || !sameRect(overlayWin.getBounds(), d.bounds)) createOverlay(d);
+  return at;
 }
 
 // Our own panel, in overlay-local DIP: the ring's label and arrow keep out of it (the owner: they went under the docked
@@ -310,29 +308,36 @@ function placeOverlay(physRect) {
 function panelInOverlay() {
   if (!alive(widgetWin) || !widgetWin.isVisible() || !alive(overlayWin)) return null;
   const w = widgetWin.getBounds(), o = overlayWin.getBounds();
+  if (w.x >= o.x + o.width || w.x + w.width <= o.x || w.y >= o.y + o.height || w.y + w.height <= o.y) return null; // another screen
   return [w.x - o.x, w.y - o.y, w.width, w.height];
 }
 
 // A warning card stays until the person closes it, or Stop / Home / closing the page (UX 12): the agent's
 // clearOverlay and its rings never wipe it (clearWarning does).
-let warningShown = false;
+let warningShown = false, warningMsg = null, ringMsg = null;
 function overlay(msg) {
   if (!alive(overlayWin)) return;
   warningShown = msg.type === 'warning';
-  send(overlayWin, 'overlay', msg);
-  if (SMOKE) return; // the hidden test run never puts the overlay on the real screen
-  if (msg.type === 'clear') {
-    overlayWin.setIgnoreMouseEvents(true);
-    overlayWin.setFocusable(false);
-    overlayWin.hide();
-  } else {
-    const interactive = msg.type === 'warning';
-    overlayWin.setIgnoreMouseEvents(!interactive);
-    overlayWin.setFocusable(interactive);
-    overlayWin.showInactive();
-    overlayWin.moveTop(); // above our own always-on-top panel, which re-stacks itself when it moves or docks
-    if (interactive) overlayWin.focus();
-  }
+  if (warningShown) warningMsg = msg;
+  ringMsg = msg.type === 'highlight' ? msg : null;
+  const w = overlayWin;
+  overlayReady.then(() => { // a new overlay (another screen) shows once its page can draw; order is kept
+    if (!alive(w)) return; // replaced meanwhile: the newer message goes to the new one
+    send(w, 'overlay', msg);
+    if (SMOKE) return; // the hidden test run never puts the overlay on the real screen
+    if (msg.type === 'clear') {
+      w.setIgnoreMouseEvents(true);
+      w.setFocusable(false);
+      w.hide();
+    } else {
+      const interactive = msg.type === 'warning';
+      w.setIgnoreMouseEvents(!interactive);
+      w.setFocusable(interactive);
+      w.showInactive();
+      w.moveTop(); // above our own always-on-top panel, which re-stacks itself when it moves or docks
+      if (interactive) w.focus();
+    }
+  });
 }
 
 // ---------- private transcript (settings.keepTranscript: the owner's troubleshooting copy, on this computer only) ----------
@@ -401,15 +406,19 @@ const ui = {
     return wait ? spoken : Promise.resolve();
   },
   status(st) { lastStatus = st || { state: 'idle' }; broadcast('status', lastStatus); },
-  ask({ question, choices = [], kind = 'choice', details = null, noAutoMic = false }) {
+  ask({ question, choices = [], kind = 'choice', details = null, noAutoMic = false, green }) {
     if (pendingAsk) ui.cancelAsk();
     const requestId = 'q' + (++askSeq);
     confirmOpen = kind === 'confirm'; // the confirm card may use up to 90% of the screen height
     expandWidget(true);
+    // The ring came first (guide_user): its dim keeps off the panel as it is now, opened or grown for this question.
+    const avoid = ringMsg && panelInOverlay();
+    if (ringMsg && String(avoid) !== String(ringMsg.avoid)) overlay({ ...ringMsg, avoid });
     const id = ++saySeq;
     // sayId: the widget opens the mic once it is said; noAutoMic: main's own questions (a scam page's looping voice or
     // a TV must never answer them, and what they hear would become a new request) wait for Talk or a button.
-    const msg = { requestId, question, choices, kind, details, sayId: id, noAutoMic: !!noAutoMic };
+    // green: the choice the widget shows as the big green button (guide_user's "I did it, but Barnaby didn't notice").
+    const msg = { requestId, question, choices, kind, details, sayId: id, noAutoMic: !!noAutoMic, green };
     speakOut(id, question);
     broadcast('ask', msg);
     log('[ask]', kind, choices.length + ' choices');
@@ -430,8 +439,10 @@ const ui = {
   // ring passes {dim:false} (UX 11.4).
   highlight(rect, label, opts = {}) {
     if (warningShown) return; // the warning card stays on top until the person closes it
-    placeOverlay(rect);
-    overlay({ type: 'highlight', rect: toDip(rect), label: label || '', arrow: true, dim: opts.dim !== false, avoid: panelInOverlay() });
+    const at = placeOverlay(rect);
+    if (!at) return;
+    log('[ring] display ' + at.display.id + ' scale ' + at.display.scaleFactor + ' rect ' + rect.map(Math.round).join(',')); // never the text
+    overlay({ type: 'highlight', rect: at.rect, label: label || '', arrow: true, dim: opts.dim !== false, avoid: panelInOverlay() });
   },
   clearOverlay() { if (!warningShown) overlay({ type: 'clear' }); },
   // kind: the guardian's scam kind (tech_support, gift_card, ...). Every scam warning goes into the safety diary.
@@ -1095,6 +1106,10 @@ async function smokeDock(out, shot) {
     ui.status({ state: 'thinking', effort: 'high' });
     await wait(300);
     d.thinkBig = await js('!document.getElementById("thinkBig").hidden'); // the big "please wait" sign
+    // Its dots keep moving when Windows counts the panel as hidden or covered (the owner: "it just stays stuck");
+    // this never-shown window is that case.
+    d.thinkMoving = await js('new Promise((r) => { const a = document.querySelector("#thinkBig i").getAnimations()[0]; ' +
+      'const t0 = a && a.currentTime; setTimeout(() => r(!!a && a.currentTime !== t0), 700); })');
     d.speedButtons = await js('document.querySelectorAll("#speedRow button").length');
     await shot(widgetWin, 'widget-thinking');
     expandWidget(false); await wait(300);
@@ -1125,6 +1140,7 @@ async function smokeDock(out, shot) {
     if (d.planItems !== 4 || d.title !== 'Clicking \u201cNew mail\u201d') bad.push('status card: ' + d.planItems + ' plan steps, title ' + d.title);
     if (d.pillBusy !== 'Thinking\u2026') bad.push('the pill says ' + JSON.stringify(d.pillBusy) + ' while thinking');
     if (!d.thinkBig || d.thinkBigIdle) bad.push('big thinking sign: shown while thinking ' + d.thinkBig + ', while idle ' + d.thinkBigIdle);
+    if (!d.thinkMoving) bad.push('the thinking dots stand still in a hidden or covered panel');
     if (d.speedButtons !== 3) bad.push('speed row has ' + d.speedButtons + ' buttons');
     if (!sameRect(d.pill, d.pillWant)) bad.push('pill after docking ' + JSON.stringify(d.pill) + ', not back in its corner ' + JSON.stringify(d.pillWant));
     if (!sameRect(d.floating, d.floatingWant)) bad.push('floating panel ' + JSON.stringify(d.floating) + ' != ' + JSON.stringify(d.floatingWant));
@@ -1371,7 +1387,10 @@ app.whenReady().then(async () => {
     screen.on(ev, (_e, _d, changed) => {
       if (dock && (ev !== 'display-metrics-changed' || (changed || []).some((c) => c !== 'workArea'))) { lastDock.clear(); endDock(); }
       layoutWidget();
-      if (warningShown) placeOverlay(lastTarget && lastTarget.rect);
+      if (!warningShown) return;
+      const w = overlayWin;
+      placeOverlay(lastTarget && lastTarget.rect);
+      if (overlayWin !== w) overlay(warningMsg); // a new overlay page: the card comes back on it
     });
   }
   setTimeout(maintenanceTick, 60 * 1000);

@@ -389,3 +389,71 @@ test('--record turns off content protection on every window that sets it; normal
   for (const c of calls) assert.strictEqual(c, 'setContentProtection(!RECORD)');
   assert.match(src, /const RECORD = process\.argv\.includes\('--record'\);/);
 });
+
+// The owner's screens (2026-09-28): a 100% 1920x1080 primary, and a 200% 2880x1800 laptop below it at physical
+// (-441, 1080). A ring converts with ITS screen's scale, and back on the primary it is 1:1 again.
+test('ringOnDisplay: physical rect -> the ring screen and its overlay-page px (mixed scaling)', () => {
+  const primary = { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1, phys: { x: 0, y: 0 } };
+  const laptop = { id: 2, bounds: { x: -441, y: 1080, width: 1440, height: 900 }, scaleFactor: 2, phys: { x: -441, y: 1080 } };
+  const both = [primary, laptop];
+  const to = geom.ringOnDisplay(both, [300, 468, 600, 30]); // Gmail's To box
+  assert.strictEqual(to.display.id, 1);
+  assert.deepStrictEqual(to.rect, [300, 468, 600, 30]);
+  const chrome = geom.ringOnDisplay(both, [559, 2800, 80, 80]); // a taskbar button on the laptop
+  assert.strictEqual(chrome.display.id, 2);
+  assert.deepStrictEqual(chrome.rect, [500, 860, 40, 40]);
+  assert.deepStrictEqual(geom.ringOnDisplay(both, [300, 506, 600, 30]).rect, [300, 506, 600, 30], 'back on the primary: 1:1');
+  assert.strictEqual(geom.ringOnDisplay(both, [0, 5000, 10, 10]).display.id, 2, 'off every screen: the nearest');
+  assert.strictEqual(geom.ringOnDisplay(both, [1, 2, NaN, 4]), null);
+  assert.strictEqual(geom.ringOnDisplay(both, null), null);
+});
+
+test('main: a ring is placed by ringOnDisplay on a new overlay per screen, and logged without its text', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(src, /geom\.ringOnDisplay\(/);
+  assert.match(src, /log\('\[ring\] display ' \+ at\.display\.id \+ ' scale ' \+ at\.display\.scaleFactor \+ ' rect ' \+ rect\.map\(Math\.round\)\.join\(','\)\)/);
+  const place = src.slice(src.indexOf('function placeOverlay('), src.indexOf('function panelInOverlay('));
+  assert.match(place, /createOverlay\(d\)/);
+  assert.doesNotMatch(place, /setBounds/, 'never moves the overlay between screens');
+});
+
+test('status: a label that repeats the question on screen gives way to the state words (shown once)', () => {
+  const q = 'Please type a short subject for your email in the Subject box.';
+  const st = { state: 'waiting', label: q, step: 4, totalSteps: 5 };
+  assert.strictEqual(status.view(st, 'Barnaby').title, q);
+  const v = status.view(st, 'Barnaby', ' ' + q + ' ');
+  assert.strictEqual(v.title, 'Your turn');
+  assert.strictEqual(v.kicker, 'Step 4 of 5');
+  assert.strictEqual(status.view(st, 'Barnaby', 'Something else.').title, q);
+});
+
+// ui/overlay.js in a tiny fake page: the label keeps out of the docked panel, and a ring off this screen draws nothing.
+test('overlay: label beside a docked panel, nothing for a ring off this screen', () => {
+  const vm = require('vm');
+  const els = {};
+  const el = (id) => els[id] || (els[id] = { id, hidden: id === 'hl', style: {}, textContent: '', offsetWidth: id === 'bubble' ? 420 : 48,
+    offsetHeight: id === 'bubble' ? 90 : 48, classList: { toggle() {}, add() {} }, append() {}, focus() {} });
+  let onOverlay = null;
+  const win = { innerWidth: 1920, innerHeight: 1080, addEventListener() {}, location: { search: '' } };
+  win.helper = { getSettings: () => ({}), on: (ch, f) => { if (ch === 'overlay') onOverlay = f; }, overlayDismiss() {} };
+  const ctx = { window: win, location: win.location, URLSearchParams, Promise, Number, String, Math, Array, Object, Date,
+    document: { getElementById: el, addEventListener() {}, documentElement: { style: { setProperty() {} }, dataset: {} }, body: { classList: { add() {} } } } };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'ui', 'overlay.js'), 'utf8'), ctx);
+  const panel = [1280, 0, 640, 1032];
+  onOverlay({ type: 'highlight', rect: [300, 20, 960, 30], label: 'Click in the To box.', avoid: panel });
+  assert.strictEqual(els.hl.hidden, false);
+  const bx = parseInt(els.bubble.style.left, 10), by = parseInt(els.bubble.style.top, 10);
+  assert.ok(bx + 420 <= 1280, 'the label ends before the panel: ' + bx);
+  assert.ok(by > 20 + 30, 'a target near the top: the label goes below it: ' + by);
+  assert.strictEqual(els.arrow.style.transform, 'rotate(0deg)');
+  // the dim has a hole where the panel is (spot box at 288,8): its green button is never darkened
+  const clip = els.spot.style.clipPath;
+  assert.ok(clip.startsWith('polygon(evenodd, '), clip);
+  for (const pt of ['992px -8px', '992px 1024px', '1632px 1024px', '1632px -8px']) assert.ok(clip.includes(pt), 'panel corner ' + pt);
+  onOverlay({ type: 'highlight', rect: [300, 20, 960, 30], label: 'x' });
+  assert.strictEqual(els.spot.style.clipPath, '', 'no panel on this screen: the whole screen is dimmed');
+  onOverlay({ type: 'highlight', rect: [300, -200, 400, 60], label: 'x', avoid: panel });
+  assert.strictEqual(els.hl.hidden, true, 'off this screen: no ring, no arrow at the edge');
+  onOverlay({ type: 'highlight', rect: [700, 400, 200, 40], label: 'Left panel', avoid: [0, 0, 640, 1032] });
+  assert.ok(parseInt(els.bubble.style.left, 10) >= 640, 'docked left: the label starts after the panel');
+});

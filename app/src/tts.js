@@ -55,7 +55,7 @@ function trim(pcm, rate) {
 async function synth(text, { apiKey, model, voice, speed = 0.9, style = '', signal, timeoutMs = 8000, fetchImpl = fetch }) {
   if (!apiKey) throw Object.assign(new Error('no API key'), { kind: 'nokey' });
   if (!ZDR_TTS.has(model)) throw Object.assign(new Error('TTS model not on the zero-retention list: ' + model), { kind: 'notzdr' });
-  // Pace comes from the model's own speed (0.8 Slower / 0.9 Normal / 1.0 A bit faster), never a time-stretch.
+  // Pace comes from the model's own speed (0.9 Slow / 1.0 Normal / 1.1 Faster), never a time-stretch.
   // A style goes to Azure as provider.options.azure.style (same ZDR endpoint); ignored, it is just the plain voice.
   const provider = { zdr: true, data_collection: 'deny' };
   if (style) provider.options = { azure: { style } };

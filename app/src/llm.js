@@ -44,7 +44,9 @@ async function chat({ apiKey, model, fallbackModel, providers, messages, tools, 
   if (tools && tools.length) { body.tools = tools; body.tool_choice = toolChoice || 'auto'; }
   // Reasoning is returned (not excluded) so the whole assistant message, reasoning_details included, can go
   // back in the tool loop: DeepSeek and Gemini both need their own reasoning handed back between tool calls.
-  if (reasoningEffort) body.reasoning = { effort: reasoningEffort };
+  // 'none' switches thinking off (DeepSeek thinks unless it is told not to); null sends nothing.
+  if (reasoningEffort === 'none') body.reasoning = { enabled: false };
+  else if (reasoningEffort) body.reasoning = { effort: reasoningEffort };
   if (!pinned && privacyFallback.has(model)) delete body.provider.zdr;
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
