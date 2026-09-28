@@ -457,3 +457,12 @@ test('overlay: label beside a docked panel, nothing for a ring off this screen',
   onOverlay({ type: 'highlight', rect: [700, 400, 200, 40], label: 'Left panel', avoid: [0, 0, 640, 1032] });
   assert.ok(parseInt(els.bubble.style.left, 10) >= 640, 'docked left: the label starts after the panel');
 });
+
+test('Scam Shield warns once per page a session and once per kind in 5 minutes; a title count is not a new page', () => {
+  const warned = new Map(), kinds = new Map(), t = 1e12;
+  assert.strictEqual(alerts.warnOnce(warned, kinds, 7, 'Pay with gift cards (3) - Gmail', 'gift_card', t), true);
+  assert.strictEqual(alerts.warnOnce(warned, kinds, 7, 'Pay with gift cards (4) - Gmail', 'gift_card', t + 60 * 60 * 1000), false, 'same page later');
+  assert.strictEqual(alerts.warnOnce(warned, kinds, 9, 'Another gift card page', 'gift_card', t + 20000), false, 'same kind within minutes');
+  assert.strictEqual(alerts.warnOnce(warned, kinds, 9, 'Call Microsoft now', 'tech_support', t + 20000), true, 'another kind');
+  assert.strictEqual(alerts.warnOnce(warned, kinds, 9, 'Another gift card page', 'gift_card', t + 6 * 60 * 1000), true, 'after 5 minutes');
+});

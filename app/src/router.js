@@ -100,4 +100,16 @@ async function route(utterance, { apiKey, jevModel, llmFallback, jev = jevDefaul
   return { intent: ans.choice, confidence: ans.confidence, source: 'jev' };
 }
 
-module.exports = { route, INTENTS, heuristic, parseIntent, CRITERIA };
+// Said while a task runs, but not a request (the owner: a stray "Erol" and "Thank you so much, Barnaby" each got
+// "I'm still working on the last thing"). -> 'thanks' (only thanks and kind words), 'filler' ("um", "hey Barnaby"),
+// 'short' (one other word: a stray name, or the end of a sentence cut by a pause), or null for a real request.
+const FILLER = new Set('um umm uh uhm er erm ah ahh hmm hm mm mhm oh hey hi hello ok okay yes yeah yep so well right alright barnaby'.split(' '));
+const KIND_WORDS = new Set("thank thanks thankyou cheers you so much very a lot again dear that's thats that is it was great wonderful lovely perfect good nice really kind of i appreciate".split(' '));
+function smallTalk(utterance) {
+  const w = clean(utterance).split(' ').filter(Boolean);
+  if (!w.length || w.every((x) => FILLER.has(x))) return 'filler';
+  if (w.some((x) => /^(?:thank|thanks|thankyou|cheers)$/.test(x)) && w.every((x) => FILLER.has(x) || KIND_WORDS.has(x))) return 'thanks';
+  return w.filter((x) => !FILLER.has(x)).length === 1 ? 'short' : null;
+}
+
+module.exports = { route, INTENTS, heuristic, parseIntent, CRITERIA, smallTalk };

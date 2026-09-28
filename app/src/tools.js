@@ -78,7 +78,7 @@ const ALL = [
       explain: { type: 'string', description: 'One short plain sentence on what you are changing for them.' },
     }, ['changes']),
   fn('run_command', 'Run one Windows PowerShell command (a check or a fix the safe list does not cover; prefer run_check and apply_fix when they cover it). ' +
-    'Looking something up runs quietly in the background when it is a simple read-only form, e.g. Test-Path "$env:ProgramFiles\\Zoom", ' +
+    'Looking something up runs in the background when it is a simple read-only form, e.g. Test-Path "$env:ProgramFiles\\Zoom", ' +
     'Get-StartApps | Where-Object Name -like \'*zoom*\', Get-Process | Sort-Object CPU -Descending | Select-Object -First 5 (no { } blocks, no ( ), no ;). ' +
     'It runs without asking the person. Never use it to open or start a program: use open, or press_keys "win", ' +
     'type_text the name, press_keys "enter". The person never sees or hears the command. It runs with administrator rights, so be careful and precise.',
@@ -127,8 +127,9 @@ const center = (r) => ({ x: Math.round(r[0] + r[2] / 2), y: Math.round(r[1] + r[
 // Final, irreversible buttons: the person always presses these (backs up the guardian).
 const FINAL = /^(send|send now|send email|pay|pay now|place (your )?order|buy|buy now|purchase|complete (purchase|order)|confirm (purchase|payment|order)|submit|submit payment|delete|delete forever|delete account|post|transfer|checkout|check out)$/i;
 // A guide_user instruction that chains actions (the owner's session: "type a subject ..., then click into the message
-// area and write"). "Click the box and type X" is one step; typing and THEN clicking somewhere is two.
-const CHAINED = /\b(then|after that|afterwards)\b|\b(type|write)\b.*\b(click|tap)\b/i;
+// area and write"). "Click the box and type X", "click X, then type Y", "type Y, then press Enter" and "type Y, then
+// stop" are one step (the typing watch ends on Enter); typing and THEN clicking somewhere, or "then" anything else, is two.
+const CHAINED = /\b(type|write)\b.*\b(click|tap)\b|\b(then|after that|afterwards)\b(?!\s+(type|write|press (the )?enter|hit enter|stop|wait|give it a (moment|second)|hold on)\b)/i; // "..., then wait a moment" is one action
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 const safe = (f) => { try { return f(); } catch (_) { return null; } };
@@ -154,10 +155,15 @@ function elementAt(ctx, x, y) {
   return best;
 }
 // A picture point snaps to the listed item it means (the owner's 2026-09-28 session: x,y 40 px low ringed the Subject
-// line instead of the To box). Only clickable/typable items on the picture: the item the words name, else one under the
-// point (editable first, smallest), else the nearest within ~40 picture px vertically. null: keep the point.
+// line instead of the To box). Only clickable/typable items on the picture: the item the words name (within ~40 picture
+// px), else one under the point (editable first, smallest); a nearby ordinary button is not the one meant. null: keep
+// the point. ring (guide_user): a repeated list row (an inbox row behind the Compose window, 2026-09-28b) only when the
+// words name its text and it is no typing step: "the To box" was never "unread, Amazon Prime ...".
 const INTERACTIVE = /^(Button|Hyperlink|Edit|ComboBox|ListItem|MenuItem|TabItem|CheckBox|RadioButton|TreeItem|DataItem|SplitButton|Slider|Spinner)$/;
 const EDITABLE = /^(Edit|ComboBox|Spinner)$/;
+const LIST_ROW = /^(ListItem|DataItem|TreeItem|Row)$/;
+const rowNamed = (words, name) => !TYPING.test(words || '') &&
+  String(name || '').split(/\s*,\s*/).some((f) => f.length >= 4 && String(words).toLowerCase().includes(f.toLowerCase()));
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function named(words, name) {
   const n = String(name || '').trim();
@@ -166,9 +172,7 @@ function named(words, name) {
   const w = n.split(/\s+/)[0]; // "To recipients" is named by "the box next to To"
   return /^[A-Z]\w/.test(w) && new RegExp('\\b' + esc(w) + '\\b').test(words);
 }
-// strict (Barnaby's own click): only the item under the point or the one the words name, never just the nearest
-// (a nearby ordinary button is not the one meant); the person's ring keeps the looser nearest-item fallback.
-function snapEl(ctx, p, words, strict) {
+function snapEl(ctx, p, words, ring) {
   const els = ctx.obs && ctx.obs.elements, img = ctx.obs && ctx.obs.img;
   if (!els || !img) return null;
   const pad = 40 * img.factor;
@@ -182,8 +186,10 @@ function snapEl(ctx, p, words, strict) {
     const dy = p.y < r[1] ? r[1] - p.y : p.y > r[1] + r[3] ? p.y - r[1] - r[3] : 0;
     const inside = dy === 0 && p.x >= r[0] && p.x <= r[0] + r[2];
     if (!inside && dy > pad) continue;
-    if (strict && !inside && !named(words, e.name)) continue;
-    const key = [named(words, e.name) ? 0 : 1, inside ? 0 : 1, EDITABLE.test(e.role) ? 0 : 1, dy, r[2] * r[3]];
+    const row = ring && LIST_ROW.test(e.role);
+    const nm = row ? rowNamed(words, e.name) : named(words, e.name);
+    if (row ? !nm : !inside && !nm) continue;
+    const key = [nm ? 0 : 1, inside ? 0 : 1, EDITABLE.test(e.role) ? 0 : 1, dy, r[2] * r[3]];
     if (!bestKey || less(key, bestKey)) { best = e; bestKey = key; }
   }
   return best;
@@ -322,7 +328,7 @@ function resolvePoint(ctx, args) {
     const img = ctx.obs && ctx.obs.img;
     if (!img) return { error: 'ERROR: there is no screenshot to measure from. Use an item number.' };
     const p = toPhysical(img, args.x, args.y);
-    const s = snapEl(ctx, p, args.explain, true);
+    const s = snapEl(ctx, p, args.explain);
     if (s) { snapNote(ctx, s); return { el: s, p: center(s.rect) }; }
     return { el: elementAt(ctx, p.x, p.y), p };
   }
@@ -534,6 +540,19 @@ async function screenSig(ctx) {
   return JSON.stringify([s[0].hwnd, s[0].title, ((s[1] && s[1].windows) || []).map((w) => [w.hwnd, w.title, !!w.minimized])]);
 }
 
+// A click on Barnaby's docked panel or any of his own windows (the floating widget, a card).
+async function onOwnWindow(ctx, c) {
+  if (!num(c.x) || !num(c.y)) return false;
+  const r = safe(() => ctx.ui.dockedPanel && ctx.ui.dockedPanel());
+  if (r && c.x >= r[0] && c.y >= r[1] && c.x < r[0] + r[2] && c.y < r[1] + r[3]) return true;
+  if (ctx.ui.ownPid == null) return false;
+  const w = await Promise.resolve().then(() => ctx.native.call('window_at', { x: c.x, y: c.y }, 2000)).catch(() => null);
+  // The click-through ring overlay covers a whole screen and should never be hit; if Windows ever returned it, a real
+  // miss must still count, so a window of ours as big as the screen is not the panel.
+  const m = ctx.obs && ctx.obs.monitor;
+  return !!w && w.pid === ctx.ui.ownPid && !(Array.isArray(w.rect) && Array.isArray(m) && w.rect[2] >= m[2] && w.rect[3] >= m[3]);
+}
+
 async function guideUser(ctx, args) {
   const instruction = String(args.instruction || '').trim();
   if (!instruction) return 'ERROR: instruction is empty.';
@@ -549,8 +568,12 @@ async function guideUser(ctx, args) {
   } else if (num(args.x) && num(args.y) && ctx.obs && ctx.obs.img) {
     const w = num(args.w) && args.w > 4 ? args.w : 90, h = num(args.h) && args.h > 4 ? args.h : 60;
     rect = imageRectToPhysical(ctx.obs.img, [args.x - w / 2, args.y - h / 2, w, h]);
-    el = snapEl(ctx, toPhysical(ctx.obs.img, args.x, args.y), instruction);
-    if (el) { snapNote(ctx, el); rect = el.rect; } else el = elementAt(ctx, rect[0] + rect[2] / 2, rect[1] + rect[3] / 2);
+    el = snapEl(ctx, toPhysical(ctx.obs.img, args.x, args.y), instruction, true);
+    if (el) { snapNote(ctx, el); rect = el.rect; } else {
+      ctx.snapNote = 'That thing is not in the item list; if the ring looks wrong, zoom there first.';
+      el = elementAt(ctx, rect[0] + rect[2] / 2, rect[1] + rect[3] / 2);
+      if (el && LIST_ROW.test(el.role || '')) el = null; // the inbox row behind it is not what the ring means
+    }
   }
   // The person does it, but the helper's ring and voice must never lead them to a remote tool, a gift card,
   // a money exit or a security switch (6.1 #1, R6): the never-rules apply to guided steps too.
@@ -570,14 +593,17 @@ async function guideUser(ctx, args) {
   // The screen before their click: a click outside the ring that changed it (a new window) is not a miss.
   const sig0 = waitClick ? screenSig(ctx).catch(() => null) : null;
   if (waitClick) {
-    const clickW = ctx.native.call('wait_click', { timeoutMs: 180000, rect }, 190000)
-      .then((c) => ({ click: c || {} }), () => ({ clickFailed: true }));
-    out = await waiting(ctx, Promise.race([clickW, askW]));
-    if (out.clickFailed) out = await waiting(ctx, askW); // cannot watch the mouse: wait for their answer
-    if (out.click && out.click.clicked && !out.click.inRect) {
+    for (;;) {
+      const clickW = ctx.native.call('wait_click', { timeoutMs: 180000, rect }, 190000)
+        .then((c) => ({ click: c || {} }), () => ({ clickFailed: true }));
+      out = await waiting(ctx, Promise.race([clickW, askW]));
+      if (out.clickFailed) out = await waiting(ctx, askW); // cannot watch the mouse: wait for their answer
+      if (!(out.click && out.click.clicked && !out.click.inRect)) break;
       // A tap on our own panel ("I need help") reaches the mouse hook first: give its answer a moment.
       const late = await Promise.race([askW, new Promise((r) => setTimeout(() => r(null), 600))]);
-      if (late) out = late;
+      if (late) { out = late; break; }
+      // A click in Barnaby's own panel (x=1620 on a 1280-wide work area, 2026-09-28b) is no miss: keep waiting.
+      if (!(await onOwnWindow(ctx, out.click))) break;
     }
     if (out.click) safe(() => ctx.ui.cancelAsk());
     // Answered in words: the mouse hook must not outlive the step (up to 3 minutes otherwise).
@@ -771,11 +797,9 @@ async function zoom(ctx, args) {
     label = '"' + elName(el) + '"';
   } else if (num(args.x) && num(args.y) && img) {
     const w = num(args.w) && args.w > 20 ? args.w : 400, h = num(args.h) && args.h > 20 ? args.h : 260;
-    const s = snapEl(ctx, toPhysical(img, args.x, args.y), '');
-    const c = s ? toImage(img, s.rect[0] + s.rect[2] / 2, s.rect[1] + s.rect[3] / 2) : { x: args.x, y: args.y }; // centred on the item it means
-    if (s) snapNote(ctx, s);
-    rect = imageRectToPhysical(img, [c.x - w / 2, c.y - h / 2, w, h]);
-    label = s ? '"' + elName(s) + '"' : 'the area around x=' + Math.round(args.x) + ', y=' + Math.round(args.y);
+    // Never snapped: a close-up reads an area (2026-09-28b: snapping moved it onto an inbox row, off the Compose window).
+    rect = imageRectToPhysical(img, [args.x - w / 2, args.y - h / 2, w, h]);
+    label = 'the area around x=' + Math.round(args.x) + ', y=' + Math.round(args.y);
   } else return 'ERROR: give element_id, or x and y.';
   // Clamp to the observed monitor (a screen left of or above the main one has negative coordinates). Its corner, not
   // the picture's: the picture is only the work area, and a taskbar item on the top or left lies outside it.

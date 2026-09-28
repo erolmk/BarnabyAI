@@ -86,7 +86,7 @@ its own thread; serialize writes to stdout with a lock. Unknown cmd → ok:false
 | ping | – | `{pong:true, version:"1"}` |
 | screen_info | – | `{width,height,scale, monitors:[{x,y,width,height,primary,scale}]}` (primary monitor = coordinates origin reference; `scale` = DPI/96) |
 | screenshot | `{maxWidth:1280, x?,y?,width?,height?}` | `{png:"<base64>", width, height, factor, originX, originY}` — image of primary monitor (or region), downscaled to maxWidth; physical = origin + imagePx * factor |
-| elements | `{scope:"foreground"\|"window", hwnd?, max:250}` | `{window:{hwnd,title,process,rect:[x,y,w,h]}, elements:[{id,name,role,rect:[x,y,w,h],value?,enabled,focused?}]}` — visible, on-screen, interactive or text-bearing UIA elements of that window in reading order; ids are small ints valid until the next `elements` call. `taskbar:true` lists the taskbar of hwnd's screen (Shell_TrayWnd / Shell_SecondaryTrayWnd) instead; `append:true` numbers the items after the last list and keeps it, so `click_element` takes both. Hard time budget ~2.5 s (return what you have + `truncated:true`). For Chromium/Edge windows walk into the web content (set `UIA_*` cache request / use `TreeWalker.ControlViewWalker`). |
+| elements | `{scope:"foreground"\|"window", hwnd?, max:250}` | `{window:{hwnd,title,process,rect:[x,y,w,h]}, elements:[{id,name,role,rect:[x,y,w,h],value?,enabled,focused?}]}` — visible, on-screen, interactive or text-bearing UIA elements of that window in reading order; ids are small ints valid until the next `elements` call. `taskbar:true` lists the taskbar of hwnd's screen (Shell_TrayWnd / Shell_SecondaryTrayWnd) instead; `append:true` numbers the items after the last list and keeps it, so `click_element` takes both. Hard time budget ~2.5 s (return what you have + `truncated:true`). Over `max`: a list of more than 16 same-size rows (an inbox) keeps its first 12 plus the 4 nearest the focus (a row's cells go with it); still over, keep the focused item and its 20 neighbours, dialog/menu/popup items, edits, buttons/menu items, other controls, then text (ties: higher on screen); ids stay 1..n in reading order. Test-only cmd `pick_check`. For Chromium/Edge windows walk into the web content (set `UIA_*` cache request / use `TreeWalker.ControlViewWalker`). |
 | click | `{x,y,button:"left"\|"right", double:false}` | `{}` (SendInput, moves cursor there) |
 | click_element | `{id, double:false}` | `{x,y,method:"invoke"\|"click"}` — Invoke/Select/Toggle pattern if safe else click center |
 | type | `{text}` | `{}` (SendInput KEYEVENTF_UNICODE, handles \n as Enter) |
@@ -158,16 +158,24 @@ Main → renderer events (channel: payload):
 - The system prompt is static per mode (byte-identical between tasks). The person's facts, memory, recipes,
   lesson and the time go in the first user message, so the provider can reuse its cache. The prompt tells the
   helper to act first, take the shortest path, ask only what it cannot find out, and never repeat the task back.
-- Thinking policy: high only for step 1, the step right after a surprise, support diagnosis and chat; otherwise
-  low; no sticky high and no Jev effort call; maxTokens 6000 high / 2500 low. Each brain call logs `[llm] mode effort N in, N cached, N out, provider`
+- Thinking policy (2026-09-28b): one Jev choice none/low/high per step. A new task's first plan thinks high; a
+  surprise (failed step, person stuck/asking for help) or a mode switch at least low. Jev unsure (< 0.5) -> none,
+  unless one of those hard signals is on (then the higher of its top two). Jev down -> rules (chat: low). maxTokens
+  none 1200 / low 1200 / high 2200 (the cap bounds thinking: reasoning.max_tokens is ignored for deepseek-v4.1-flash);
+  a reply cut by the cap (`finish:'length'`) is asked again at once with thinking off (`[think] X hit the cap`).
+  Earlier turns' reasoning is dropped when a new screen arrives (the current turn keeps its own). Each brain call logs `[llm] mode effort N in, N cached, N out, provider`
   (numbers only). handle() sets status `{state:'thinking', label:'One moment…'}` as soon as the person is heard.
 - Each step: observe = foreground window + `elements` (compact text list `[id] role "name" (x,y,w,h)`)
   + screenshot (maxWidth 1280, jpeg/png as data URL) + list of open windows + memory facts + task
-  transcript so far. The screenshot is only the `work_area` of the window's screen (no taskbar, no docked AppBar;
+  transcript so far. With Barnaby's own window in front, the look takes the task's window from the last look (open, not
+  minimized); if it has closed (a file picker after the pick), the top window on that screen; else `ui.lastTarget()`. The screenshot is only the `work_area` of the window's screen (no taskbar, no docked AppBar;
   a docked panel without an AppBar, `ui.dockedPanel()`, is cut off too), so 1080p is not shrunk. The taskbar's
   buttons follow as a text section (`Taskbar (bottom of the screen, not in the picture)`, ids after the window's,
   Text items dropped). "Second screen" = the monitor's corner is not 0,0 (never the picture's origin). A look stays on the last look's window when the new foreground is an already-open window on another screen and the old one is still there and not minimized (followed: same window, same screen, a new window, or right after `open`/`press_keys`). Log: `[look] window proc screen x,y,w,h region x,y,w,h factor f`. Send to brain model with tools. Execute returned tool calls in order.
   Max 40 steps, per-task cost cap (settings, default $0.25), timeout 15 min, Stop button aborts.
+- The model's own words (text beside tool calls, text-only replies, `say`) drop any sentence already said this task
+  or sharing >= 80% of its words with one; scam/gift-card talk is spoken in one reply per task (a screen the automatic
+  check flags gets its own). Guardian refusals and safety lines never pass through this filter.
 - Every action tool carries `explain` (one short sentence, about 15 words: what and where, why only when not
   obvious; never repeats the task). The caption and ring show first, and the action waits at most 1.2 s (0.6 s
   with no ring) for the voice, which keeps playing while acting. Recorded into the lesson.
@@ -175,9 +183,14 @@ Main → renderer events (channel: payload):
   `press_keys{keys, explain}`, `scroll{direction, amount, explain}`, `open{target, explain}`,
   `wait{seconds}`, `say{text}` (findings / what changed, no question), `ask_user{question, choices?}`, `guide_user{element_id|x,y,w,h, instruction,
   wait_for:"click"|"done"}` (overlay highlight → wait for the person's real click or "I did it"),
-  One action per guide_user ("then", "after that", or type/write followed by click/tap → ERROR). x,y with no
-  element_id (guide_user, click, zoom) snaps to a listed clickable/typable item (`snapEl`: the one the words name,
-  else under the point, else within 40 picture px; taskbar and disabled items never) and the result says so. A
+  One action per guide_user (type/write followed by click/tap, or "then"/"after that" followed by anything but
+  type/write/press Enter/stop → ERROR; "click the box and type X" and "type X, then press Enter" are one step). x,y with
+  no element_id (guide_user, click) snaps to a listed clickable/typable item (`snapEl`: the one the words name within
+  40 picture px, else the one under the point; taskbar and disabled items never). guide_user skips list rows
+  (ListItem/DataItem/TreeItem/Row) unless it is no typing step and the words contain one comma part (4+ letters) of the
+  row's name; nothing fits -> the model's rect, and the result starts "That thing is not in the item list...". zoom
+  never snaps. A click outside the ring on Barnaby's own panel or window (`ui.dockedPanel()`, or `window_at` pid =
+  `ui.ownPid`, not a screen-sized window) is no miss: the ring keeps waiting. A
   "done" step with a ring watches for a click inside it (background `wait_click`, cancelled at the end of the step)
   and then drops the label (ring stays, no dimming).
   `confirm{title, fields[], question}` (big card, Yes/No; REQUIRED before anything that sends,
@@ -212,17 +225,23 @@ Main → renderer events (channel: payload):
   sites the scam check flags; never disable antivirus/firewall; never type passwords (person does).
 - `gateAction(action, context)` → `{verdict:"auto"|"confirm"|"refuse", reason, confidence}` via one
   Jev choice; if Jev confidence < 0.6 treat `auto` as `confirm`; on Jev failure fall back to rules.
-- `checkScreen(text)` → keyword prefilter (virus/infected/call support/gift card/bitcoin/
+- `checkScreen({title,text})`: a mail folder's list view by its title ("Inbox (5,703) - me@gmail.com - Gmail",
+  "Mail - Name - Outlook") is never a scam page (one scam subject in a list is not one); an opened email is checked.
+  Then keyword prefilter (virus/infected/call support/gift card/bitcoin/
   suspended/refund/IRS/warrant/…); on a hit → Jev noul "is this a scam?"; p ≥ 0.7 → calm full-screen
   warning via overlay, speak it, log it, alert family (ntfy.sh topic POST if configured).
 - Scam Shield background loop: every 4 s check foreground window; on change run `window_text` +
-  `checkScreen`. Cheap: no model call unless the prefilter hits.
+  `checkScreen`. Cheap: no model call unless the prefilter hits. `alerts.warnOnce`: one warning per page/opened email a
+  session (a count in the title is the same page), one kind of trick at most once in 5 minutes.
 
 ## Router (src/router.js)
 Jev choice over: `task` (do something on the computer), `support` (computer problem), `chat`
 (question/conversation, no screen), `teach` (explicit "show me how / teach me"), `scam_check`
 ("is this real?", suspicious call/email), `family` (call/email family), `stop`. Keyword fast path for
-obvious ones; confidence < 0.5 → LLM fallback classification.
+obvious ones; confidence < 0.5 → LLM fallback classification. `smallTalk(text)` sorts the person's own words said while
+a task runs: 'thanks' ("You're welcome!", the task goes on), 'filler' ("um", "hey Barnaby": ignored), 'short' (one other
+word: ignored unless it can finish the last request within 25 s), null (a request: "I'm still on the last thing. Say
+stop to end it.").
 
 ## Support (src/support.js)
 Checks (read-only, return plain text): `overview` (CPU, RAM, uptime, disk free), `top_processes`,

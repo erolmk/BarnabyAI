@@ -7,6 +7,7 @@
 //   appbar {action:"undock", hwnd?} -> {removed}                                     (no hwnd = every dock)
 //   window_set {hwnd, action:"maximize"|"restore"|"minimize"|"move", rect?} -> {ok, rect, maximized, minimized}
 //   is_elevated -> {elevated, adminGroup, elevationType}    work_area {hwnd?} -> {rect, monitor}    idle -> {idleMs, locked}
+//   pick_check {items:[{role, rect, focused?}], regions?, max, window?} -> {keep}   (tests how elements picks over its cap)
 // Extra modes: helper.exe --appbar-guard <pid> <barHwnd> (started by dock), helper.exe --test-window (appbar_selftest.js).
 using System;
 using System.Collections.Generic;
@@ -276,6 +277,7 @@ static class Helper
             case "work_area": return WorkArea(a);
             case "idle": return Idle();
             case "taskbar": return Taskbar(a);
+            case "pick_check": return PickCheck(a);
             default: throw new Exception("unknown cmd: " + cmd);
         }
     }
@@ -1590,6 +1592,8 @@ static class Helper
         ControlType.Pane, ControlType.Window, ControlType.Group, ControlType.List, ControlType.Tree, ControlType.Table,
         ControlType.DataGrid, ControlType.ToolBar, ControlType.StatusBar, ControlType.TitleBar, ControlType.ScrollBar,
         ControlType.Thumb, ControlType.Separator, ControlType.MenuBar, ControlType.Menu, ControlType.Tab };
+    // Fetched only to find dialogs, menus and popups inside the window (never listed themselves).
+    static readonly ControlType[] Regions = { ControlType.Window, ControlType.Menu, ControlType.Pane };
 
     static Condition AnyType(ControlType[] ts)
     {
@@ -1650,7 +1654,7 @@ static class Helper
             System.Windows.Rect dr = (System.Windows.Rect)rv;
             foreach (AutomationElement e in found)
             {
-                if (ReferenceEquals(e, d)) continue;
+                if (ReferenceEquals(e, d) || IsIn(Cached(e, AutomationElement.ControlTypeProperty) as ControlType, Regions)) continue;
                 object ev = Cached(e, AutomationElement.BoundingRectangleProperty);
                 if (ev is System.Windows.Rect && !((System.Windows.Rect)ev).IsEmpty && dr.Contains(((System.Windows.Rect)ev).TopLeft)) return false;
             }
@@ -1708,6 +1712,132 @@ static class Helper
         return bar;
     }
 
+    // Over the cap: keep what the person is likely to need, not just the top of the window. First, runs of more than
+    // 16 same-shaped list/grid rows (an inbox) are cut to their first 12 rows plus the 4 nearest the focus; a row's
+    // checkboxes, links and cells go with it. Still too many: keep by rank, the focused item and its 20 nearest
+    // neighbours, then anything in a dialog/menu/popup, edit boxes, buttons and menu items, other controls, text.
+    // list is in tree order and stays in it; ties go to the higher item, so the same window gives the same list.
+    static List<ElemInfo> Pick(List<ElemInfo> list, List<int[]> regions, int max, int[] wr)
+    {
+        int n = list.Count;
+        ElemInfo focus = null;
+        foreach (ElemInfo it in list) if (it.Focused && (long)it.W * it.H * 4 < (long)wr[2] * wr[3]) { focus = it; break; }
+        double fx = focus == null ? 0 : focus.X + focus.W / 2.0, fy = focus == null ? 0 : focus.Y + focus.H / 2.0;
+
+        // A ListItem/TreeItem/DataItem owns the items right after it in tree order whose middle is inside it.
+        int[] owner = new int[n];
+        int cur = -1;
+        int[] cr = null;
+        for (int i = 0; i < n; i++)
+        {
+            if (cur >= 0 && Within(list[i], cr)) { owner[i] = cur; continue; }
+            string r = list[i].Role;
+            owner[i] = cur = r == "ListItem" || r == "TreeItem" || r == "DataItem" ? i : -1;
+            if (cur >= 0) cr = new int[] { list[i].X, list[i].Y, list[i].W, list[i].H };
+        }
+        Dictionary<long, List<int>> runs = new Dictionary<long, List<int>>();
+        for (int i = 0; i < n; i++)
+        {
+            if (owner[i] != i) continue;
+            long key = ((long)list[i].X << 32) | (uint)list[i].W;
+            List<int> g;
+            if (!runs.TryGetValue(key, out g)) runs[key] = g = new List<int>();
+            g.Add(i);
+        }
+        bool[] drop = new bool[n];
+        foreach (List<int> g in runs.Values)
+        {
+            if (g.Count <= 16) continue;
+            g.Sort(delegate(int p, int q) { return list[p].Y != list[q].Y ? list[p].Y.CompareTo(list[q].Y) : p.CompareTo(q); });
+            List<int> rest = g.GetRange(12, g.Count - 12);
+            foreach (int k in rest) drop[k] = true;
+            if (focus == null) continue;
+            rest.Sort(delegate(int p, int q)
+            {
+                int c = Math.Abs(list[p].Y + list[p].H / 2.0 - fy).CompareTo(Math.Abs(list[q].Y + list[q].H / 2.0 - fy));
+                return c != 0 ? c : p.CompareTo(q);
+            });
+            for (int k = 0; k < 4 && k < rest.Count; k++) drop[rest[k]] = false;
+        }
+        List<int> keep = new List<int>();
+        for (int i = 0; i < n; i++) if (owner[i] < 0 || !drop[owner[i]] || list[i].Focused || InRegion(list[i], regions)) keep.Add(i);
+
+        if (keep.Count > max)
+        {
+            int[] rank = new int[n];
+            foreach (int i in keep) rank[i] = Rank(list[i], regions, owner[i] >= 0);
+            if (focus != null)
+            {
+                List<int> near = new List<int>(keep);
+                near.Sort(delegate(int p, int q)
+                {
+                    double dp = Math.Pow(list[p].X + list[p].W / 2.0 - fx, 2) + Math.Pow(list[p].Y + list[p].H / 2.0 - fy, 2);
+                    double dq = Math.Pow(list[q].X + list[q].W / 2.0 - fx, 2) + Math.Pow(list[q].Y + list[q].H / 2.0 - fy, 2);
+                    return dp != dq ? dp.CompareTo(dq) : p.CompareTo(q);
+                });
+                for (int k = 0; k < 21 && k < near.Count; k++) rank[near[k]] = 0;
+            }
+            keep.Sort(delegate(int p, int q)
+            {
+                if (rank[p] != rank[q]) return rank[p].CompareTo(rank[q]);
+                if (list[p].Y != list[q].Y) return list[p].Y.CompareTo(list[q].Y);
+                return list[p].X != list[q].X ? list[p].X.CompareTo(list[q].X) : p.CompareTo(q);
+            });
+            keep = keep.GetRange(0, max);
+            keep.Sort();
+        }
+        List<ElemInfo> res = new List<ElemInfo>(keep.Count);
+        foreach (int i in keep) res.Add(list[i]);
+        return res;
+    }
+
+    static bool Within(ElemInfo it, int[] r)
+    {
+        int cx = it.X + it.W / 2, cy = it.Y + it.H / 2;
+        return cx >= r[0] && cy >= r[1] && cx < r[0] + r[2] && cy < r[1] + r[3];
+    }
+
+    static bool InRegion(ElemInfo it, List<int[]> regions) { foreach (int[] r in regions) if (Within(it, r)) return true; return false; }
+
+    static int Rank(ElemInfo it, List<int[]> regions, bool inRow)
+    {
+        if (InRegion(it, regions)) return 1;
+        if (inRow) return it.Interactive ? 4 : 5; // a list row and its cells (Explorer's are Edits) are not edit boxes
+        switch (it.Role)
+        {
+            case "Edit": case "ComboBox": case "Document": return 2;
+            case "Button": case "SplitButton": case "MenuItem": case "CheckBox": case "RadioButton": case "TabItem":
+            case "Slider": case "Spinner": return 3;
+        }
+        return it.Interactive ? 4 : 5;
+    }
+
+    // Pick on made-up items, for the tests: {items:[{role, rect, focused?}] in tree order, regions?, max, window?}
+    // -> {keep:[indexes]}.
+    static object PickCheck(Args a)
+    {
+        List<ElemInfo> list = new List<ElemInfo>();
+        foreach (object o in Arr(a["items"]))
+        {
+            Args d = (Args)o;
+            int[] r = RectArg(d, "rect");
+            ElemInfo it = new ElemInfo();
+            it.Role = Str(d, "role", ""); it.Name = list.Count.ToString(CultureInfo.InvariantCulture);
+            it.X = r[0]; it.Y = r[1]; it.W = r[2]; it.H = r[3];
+            it.Focused = Bool(d, "focused", false);
+            foreach (ControlType c in Interactive) if (c.ProgrammaticName == "ControlType." + it.Role) it.Interactive = true;
+            list.Add(it);
+        }
+        List<int[]> regions = new List<int[]>();
+        if (Has(a, "regions")) foreach (object o in Arr(a["regions"])) regions.Add(ToRect(o));
+        List<ElemInfo> kept = Pick(list, regions, Math.Max(1, Int(a, "max", 250)), RectArg(a, "window") ?? new int[] { 0, 0, 1920, 1080 });
+        List<int> idx = new List<int>();
+        foreach (ElemInfo it in kept) idx.Add(int.Parse(it.Name, CultureInfo.InvariantCulture));
+        Args res = new Args();
+        res["keep"] = idx;
+        return res;
+    }
+
     // taskbar:true lists the taskbar instead of a window. append:true numbers the items after the last list and keeps
     // that list, so click_element takes the window's ids and the taskbar's alike.
     static object Elements(Args a)
@@ -1722,13 +1852,15 @@ static class Helper
             new PropertyCondition(AutomationElement.IsOffscreenProperty, false),
             new OrCondition(
                 AnyType(Interactive),
+                AnyType(Regions),
                 new AndCondition(
                     new NotCondition(new PropertyCondition(AutomationElement.NameProperty, "")),
                     new NotCondition(AnyType(Containers)))));
         AutomationProperty[] props = {
             AutomationElement.NameProperty, AutomationElement.ControlTypeProperty, AutomationElement.BoundingRectangleProperty,
             AutomationElement.IsEnabledProperty, AutomationElement.HasKeyboardFocusProperty, AutomationElement.IsPasswordProperty,
-            AutomationElement.FrameworkIdProperty, AutomationElement.AutomationIdProperty, ValuePattern.ValueProperty };
+            AutomationElement.FrameworkIdProperty, AutomationElement.AutomationIdProperty, ValuePattern.ValueProperty,
+            AutomationElement.LocalizedControlTypeProperty };
         bool timedOut;
         AutomationElementCollection found = FindAll(hwnd, cond, props, budget, out timedOut);
         // Chromium builds a window's web tree only after the first UIA request (~1-3 s). On the first look at a
@@ -1746,6 +1878,7 @@ static class Helper
         long findMs = sw.ElapsedMilliseconds;
 
         List<ElemInfo> list = new List<ElemInfo>();
+        List<int[]> regions = new List<int[]>();
         int total = 0;
         if (found != null)
         {
@@ -1755,6 +1888,7 @@ static class Helper
                 ElemInfo it = new ElemInfo();
                 it.El = e;
                 ControlType ct = Cached(e, AutomationElement.ControlTypeProperty) as ControlType;
+                if (IsIn(ct, Regions)) total--;
                 if (ct == null) continue;
                 object rv = Cached(e, AutomationElement.BoundingRectangleProperty);
                 if (!(rv is System.Windows.Rect)) continue;
@@ -1763,6 +1897,15 @@ static class Helper
                 it.X = (int)Math.Round(r.X); it.Y = (int)Math.Round(r.Y); it.W = (int)Math.Round(r.Width); it.H = (int)Math.Round(r.Height);
                 // must overlap the window (some apps report scrolled-away items as on-screen)
                 if (it.X >= wr[0] + wr[2] || it.Y >= wr[1] + wr[3] || it.X + it.W <= wr[0] || it.Y + it.H <= wr[1]) continue;
+                if (IsIn(ct, Regions))
+                {
+                    // A dialog, menu or popup smaller than the window (Gmail's Compose box, a "Send without a subject?" box)
+                    string lct = Cached(e, AutomationElement.LocalizedControlTypeProperty) as string ?? "";
+                    if ((ct != ControlType.Pane || lct.IndexOf("dialog", StringComparison.OrdinalIgnoreCase) >= 0)
+                        && (long)it.W * it.H * 5 < (long)wr[2] * wr[3] * 4)
+                        regions.Add(new int[] { it.X, it.Y, it.W, it.H });
+                    continue;
+                }
                 it.Role = ct.ProgrammaticName.StartsWith("ControlType.") ? ct.ProgrammaticName.Substring(12) : ct.ProgrammaticName;
                 it.Name = Clip(Cached(e, AutomationElement.NameProperty) as string, 200) ?? "";
                 it.Interactive = IsIn(ct, Interactive);
@@ -1789,6 +1932,9 @@ static class Helper
             }
         }
 
+        bool capped = list.Count > max;
+        if (capped) list = Pick(list, regions, max, wr);
+
         // Reading order: rows (top within a small tolerance), then left to right.
         list.Sort(delegate(ElemInfo p, ElemInfo q) { return p.Y != q.Y ? p.Y.CompareTo(q.Y) : p.X.CompareTo(q.X); });
         List<ElemInfo> ordered = new List<ElemInfo>(list.Count);
@@ -1802,8 +1948,6 @@ static class Helper
             ordered.AddRange(row);
             i0 = j;
         }
-        bool capped = ordered.Count > max;
-        if (capped) ordered = ordered.GetRange(0, max);
 
         List<Args> outList = new List<Args>();
         int textReads = 0;

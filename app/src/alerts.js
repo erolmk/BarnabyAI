@@ -154,8 +154,20 @@ function commandLine(assistant, c, redact) {
   return assistant + ' ran a command' + (c.verdict === 'confirm' ? ' after a yes on the card' : '') + ': ' + q + '.';
 }
 
+// Scam Shield warns once per page or opened email a session, and about one kind of trick at most once in 5 minutes
+// (the owner heard the same gift-card warning four times in 16 minutes). A count in the title ("Inbox (5,703)") is
+// not a new page. Records the warning and returns true when it should be shown.
+const REPEAT_MS = 5 * 60 * 1000;
+function warnOnce(warned, kinds, hwnd, title, kind, now) {
+  const key = hwnd + '|' + String(title || '').replace(/\s*\(\d[\d,.]*\)/g, '');
+  if (warned.has(key) || now - (kinds.get(kind) || -Infinity) < REPEAT_MS) return false;
+  warned.set(key, now);
+  kinds.set(kind, now);
+  return true;
+}
+
 module.exports = {
-  commandText, commandLine,
+  commandText, commandLine, warnOnce,
   DAY, WEEK, EPISODE, KIND, REFUSAL, REFUSAL_ALERT, kindLabel, withArticle, clock, canAlert, scamAlertAllowed,
   scamAlertText, toldFamilyLine, warningLine, refusalLine, shieldChange, shieldOn, shieldOffText, weeklyDue, weeklyNoteText,
   familyLock, dueFamily, safetyPatch, familyChangeLine, familyChangeText, helperDownText, connectionText,

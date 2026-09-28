@@ -95,7 +95,7 @@ test('set_plan and the first action in one reply run in one step', async () => {
   assert.ok(h.ui.statuses.some((s) => Array.isArray(s.plan) && s.plan[0].state === 'now'));
 });
 
-test('effort: high for step 1 and right after a surprise only (no sticky high), and Jev is never asked', async () => {
+test('effort without Jev: none for every step (first plan and after a surprise too), and Jev is never asked', async () => {
   const s = makeAgent({ script: [
     assistant(tc('click', { element_id: 1, explain: 'Clicking.' })),
     assistant(tc('click', { element_id: 999, explain: 'Clicking the missing one.' })),
@@ -103,8 +103,8 @@ test('effort: high for step 1 and right after a surprise only (no sticky high), 
     assistant(tc('done', { summary: 'ok' })),
   ] });
   await s.agent.runTask('do it');
-  assert.deepEqual(s.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['high', 'low', 'high', 'low']);
-  assert.deepEqual(s.llm.calls.filter((c) => c.tools).map((c) => c.maxTokens), [6000, 2500, 6000, 2500]);
+  assert.deepEqual(s.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['none', 'none', 'none', 'none']);
+  assert.deepEqual(s.llm.calls.filter((c) => c.tools).map((c) => c.maxTokens), [1200, 1200, 1200, 1200]);
 
   let n = 0;
   const j = makeAgent({ jev: { noul: async () => { n++; return 0.9; } }, script: [
@@ -115,16 +115,16 @@ test('effort: high for step 1 and right after a surprise only (no sticky high), 
   ] });
   await j.agent.runTask('write an email');
   assert.equal(n, 0, 'no Jev effort call');
-  assert.deepEqual(j.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['high', 'low', 'low', 'low']);
+  assert.deepEqual(j.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['none', 'none', 'none', 'none']);
 
-  // support diagnosis thinks hard until a fix is proposed; settings.thinking overrides the policy
+  // support diagnosis thinks a little until a fix is proposed; settings.thinking overrides the policy
   const sup = makeAgent({ script: [
     assistant(tc('run_check', { name: 'overview' })),
     assistant(tc('apply_fix', { name: 'clear_temp', explain: 'This frees up space.' })),
     assistant(tc('done', { summary: 'ok' })),
   ] });
   await sup.agent.runSupport('my computer is slow');
-  assert.deepEqual(sup.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['high', 'high', 'low']);
+  assert.deepEqual(sup.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['low', 'low', 'none']);
   for (const [thinking, want] of [['always', 'high'], ['never', 'none']]) {
     const t = makeAgent({ settings: { thinking }, script: [assistant(tc('scroll', { direction: 'down', explain: 'x' })), assistant(tc('done', { summary: 'ok' }))] });
     await t.agent.runTask('scroll');
@@ -137,15 +137,16 @@ test('effort: high for step 1 and right after a surprise only (no sticky high), 
   ] });
   await p.agent.runTask('write an email');
   assert.equal(m, 0, 'a plan step is not a decision');
-  assert.equal(p.llm.calls[1].reasoningEffort, 'low');
+  assert.equal(p.llm.calls[1].reasoningEffort, 'none');
 });
 
-test('effort: Jev picks none / low / high beside the look; unsure takes the higher of its top two; a surprise thinks at least a little', async () => {
+test('effort: none by default; Jev only raises it, to low or high, when sure (>= 0.6); no floor for a plan or a surprise', async () => {
   const answers = [
-    { choice: 'high', confidence: 0.9, probabilities: { none: 0.05, low: 0.05, high: 0.9 } }, // a new plan
+    { choice: 'high', confidence: 0.9, probabilities: { none: 0.05, low: 0.05, high: 0.9 } }, // sure: high
     { choice: 'none', confidence: 0.97, probabilities: { none: 0.97, low: 0.02, high: 0.01 } }, // routine
-    { choice: 'none', confidence: 0.4, probabilities: { none: 0.45, low: 0.15, high: 0.4 } }, // unsure: none or high -> high
-    { choice: 'none', confidence: 0.99, probabilities: { none: 0.99, low: 0.01, high: 0 } }, // after an error: at least low
+    { choice: 'high', confidence: 0.54, probabilities: { none: 0.3, low: 0.16, high: 0.54 } }, // unsure (the live 0.32-0.54): none
+    { choice: 'high', confidence: 0.59, probabilities: { none: 0.3, low: 0.11, high: 0.59 } }, // unsure after an error: still none
+    { choice: 'low', confidence: 0.6, probabilities: { none: 0.3, low: 0.6, high: 0.1 } }, // sure enough: low
   ];
   const asked = [], lines = [];
   const h = makeAgent({
@@ -155,16 +156,17 @@ test('effort: Jev picks none / low / high beside the look; unsure takes the high
       assistant(tc('click', { element_id: 1, explain: 'Clicking.' })),
       assistant(tc('click', { element_id: 1, explain: 'Clicking again.' })),
       assistant(tc('click', { element_id: 999, explain: 'Clicking the missing one.' })),
+      assistant(tc('click', { element_id: 998, explain: 'Clicking another missing one.' })),
       assistant(tc('done', { summary: 'ok' })),
     ],
   });
   await h.agent.runTask('do it');
   const brain = h.llm.calls.filter((c) => c.tools);
-  assert.deepEqual(brain.map((c) => c.reasoningEffort), ['high', 'none', 'high', 'low']);
-  assert.deepEqual(brain.map((c) => c.maxTokens), [6000, 1200, 6000, 2500]);
+  assert.deepEqual(brain.map((c) => c.reasoningEffort), ['high', 'none', 'none', 'none', 'low']);
+  assert.deepEqual(brain.map((c) => c.maxTokens), [2200, 1200, 1200, 1200, 1200]);
   assert.deepEqual(Object.keys(asked[0].criteria), ['none', 'low', 'high']);
   assert.equal(asked[0].opts.timeoutMs, 1500);
-  assert.deepEqual(asked.map((a) => a.state.step), [1, 2, 3, 4]);
+  assert.deepEqual(asked.map((a) => a.state.step), [1, 2, 3, 4, 5]);
   assert.equal(asked[0].state.goal, 'do it');
   assert.match(asked[3].state.last_results[0], /ERROR|no item|not/i);
   // asked before the look, not after it
@@ -180,7 +182,7 @@ test('each brain call logs its token counts and provider, never content', async 
   h.agent.llm = { chat: async (a) => ({ ...(await chat(a)), usage: { prompt_tokens: 100, prompt_tokens_details: { cached_tokens: 80 }, completion_tokens: 7 }, provider: 'Phala' }) };
   await h.agent.runTask('email my granddaughter Lucy');
   const l = lines.find((x) => x.startsWith('[llm]'));
-  assert.match(l, /^\[llm\] \w+ high 100 in 80 cached 7 out Phala$/);
+  assert.match(l, /^\[llm\] \w+ none 100 in 80 cached 7 out Phala$/);
   assert.ok(!lines.some((x) => /Lucy/.test(x)));
 });
 
@@ -377,4 +379,90 @@ test('save_contact: only from their words, never over a Settings contact, never 
   assert.equal(g.knownPerson('zelle anne'), true);
   assert.equal(g.speakable('Call 555-201-7788'), 'Call [number hidden]');
   assert.equal(g.hardCheck({ tool: 'remember', args: { fact: 'Anne: anne@example.com' } }, { heard: ['her email is anne at example dot com'] }), null, 'a spoken address counts');
+});
+
+test('a reply cut by the thinking cap is redone at once without thinking', async () => {
+  const lines = [];
+  const h = makeAgent({ log: (...a) => lines.push(a.join(' ')), jev: { choice: async () => ({ choice: 'high', confidence: 0.9 }) }, script: [
+    { role: 'assistant', content: '' }, // cut while thinking
+    assistant(tc('scroll', { direction: 'down', explain: 'Scrolling.' })),
+    assistant(tc('done', { summary: 'ok' })),
+  ] });
+  const chat = h.llm.chat;
+  h.agent.llm = { chat: async (a) => { const r = await chat(a); return h.llm.calls.length === 1 ? { ...r, finish: 'length' } : r; } };
+  await h.agent.runTask('scroll');
+  const brain = h.llm.calls.filter((c) => c.tools);
+  assert.deepEqual(brain.map((c) => c.reasoningEffort).slice(0, 2), ['high', 'none']);
+  assert.equal(brain[1].messages.filter((m) => m.role === 'assistant').length, 0, 'the cut reply is not kept');
+  assert.ok(h.native.calls.some((c) => c.cmd === 'scroll'), 'the task went on');
+  assert.ok(lines.includes('[think] high hit the cap, again with none'), lines.join('\n'));
+  assert.ok(!h.ui.asks.some((a) => /What would you like me to do next/.test(a.question)), 'no nudge round');
+});
+
+test('the model says each thing once per task: repeats, near-repeats and a second scam mention are dropped (S4)', async () => {
+  const h = makeAgent({ settings: { mode: 'together' }, script: [
+    { ...assistant(tc('scroll', { direction: 'down', explain: 'Scrolling.' })), content: 'Your Gmail is open. The top email asking for gift cards is a trick, so please do not reply.' },
+    { ...assistant(tc('say', { text: 'Heads up: that gift card email is a scam. We can remove it after we send your photo.' })), content: 'Raffi Dill is in the To box.' },
+    { ...assistant(tc('say', { text: 'Raffi Dill is in the To box. We can delete it after we send your photo.' })), content: 'Raffi Dill is in the To box. Now let us attach the cat photo.' },
+    assistant(tc('done', { summary: 'ok' })),
+  ] });
+  await h.agent.runTask('email Raffi the cat photo');
+  const said = h.ui.said.join('\n');
+  assert.equal((said.match(/gift card/gi) || []).length, 1, said);
+  assert.equal((said.match(/Raffi Dill is in the To box/g) || []).length, 1, said);
+  assert.match(said, /We can remove it after we send your photo\./);
+  assert.doesNotMatch(said, /We can delete it/, 'a near-duplicate (8 of 9 words) is dropped');
+  assert.match(said, /Now let us attach the cat photo\./, 'the new part of a reply is still said');
+  assert.equal(h.toolResults(3).at(-1), 'Said.', 'a say with nothing new is skipped quietly');
+});
+
+test('words beside a spoken instruction: a rewording, a screen description before guide_user and "I\'ll start by" are dropped (live eval)', async () => {
+  const h = makeAgent({ script: [
+    { ...assistant(tc('guide_user', { element_id: 1, instruction: 'Please type Raffi in that top white box, beside the word To.', wait_for: 'click' })),
+      content: 'The new message window is open. The To box is the long white box at the top of it, beside the word To.' },
+    { ...assistant(tc('guide_user', { element_id: 1, instruction: 'Please click the red Compose button.', wait_for: 'click' })),
+      content: 'Well done! That email asking for gift cards is a scam. Your photo is ready.' },
+    assistant(tc('done', { summary: 'ok' })),
+  ] });
+  await h.agent.runTask('email Raffi', { mode: 'teach' });
+  const said = h.ui.said.join('\n');
+  assert.doesNotMatch(said, /new message window is open|long white box/, said);
+  assert.match(said, /Well done!/);
+  assert.match(said, /gift cards is a scam/, 'a scam warning always stays');
+  assert.doesNotMatch(said, /Your photo is ready/, 'a screen description before guide_user');
+
+  const d = makeAgent({ settings: { mode: 'together' }, script: [
+    { ...assistant(tc('click', { element_id: 1, explain: 'I\'m clicking the red Compose button at the top left.' })),
+      content: 'I\'ll start by opening a new message. Your mail is open.' },
+    assistant(tc('done', { summary: 'ok' })),
+  ] });
+  await d.agent.runTask('email Raffi');
+  const s2 = d.ui.said.join('\n');
+  assert.doesNotMatch(s2, /start by/, s2);
+  assert.match(s2, /Your mail is open\./, 'no guide_user: a screen description may stay');
+
+  // Live re-eval: first-plan narration anywhere in the reply, with or without a guide_user.
+  const n = makeAgent({ settings: { mode: 'together' }, script: [
+    { ...assistant(tc('open', { target: 'https://mail.google.com', explain: 'I\'m opening your email.' })),
+      content: 'I\'ll help you send Raffi a picture of your cat. Let me look at your screen first. I can see your Gmail is open. Let me start by finding the cat picture. Here we go!' },
+    assistant(tc('done', { summary: 'ok' })),
+  ] });
+  await n.agent.runTask('email Raffi a cat picture');
+  const s3 = n.ui.said.join('\n');
+  assert.doesNotMatch(s3, /I'll help you|Let me look|I can see|start by/, s3);
+  assert.match(s3, /Here we go!/);
+});
+
+test('prompt: attaching a file goes through the program\'s attach button, no separate trip to the folder', () => {
+  const t = taskSystem('teach');
+  assert.ok(t.includes('go straight to the program\'s own attach button'));
+  assert.ok(t.includes('Never make a separate trip to a folder first.'));
+});
+
+test('prompt: find it yourself (let the mail program suggest the address), say it once, no narrating, one scam mention', () => {
+  const t = taskSystem('teach');
+  for (const s of ['Find it yourself before asking', 'type the person\'s name in the To box', 'Say each thing once', 'Never narrate your own workings',
+    'mentioned once in a task', 'clicking the box and typing in it is one step', 'You never type these', 'Never install programs', 'AnyDesk', 'looks like a scam',
+    'With guide_user, everything goes in the instruction; say nothing before it.', '"I\'ll start by..."', 'never say the word "quietly"']) assert.ok(t.includes(s), s);
+  assert.equal(t.split('quietly').length, 2, 'the prompt itself no longer says "quietly"');
 });

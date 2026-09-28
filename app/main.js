@@ -520,7 +520,7 @@ async function realClickSince(t, graceMs) {
 // `routing` covers that gap; a route that finishes after Stop is dropped by agent.handle, so it never starts.
 let routing = null;
 const busyNow = () => !!routing || !!(agent && agent.busy);
-const STILL_WORKING = "I'm still working on the last thing. Say stop if you'd like me to stop.";
+const STILL_WORKING = "I'm still on the last thing. Say stop to end it.";
 
 // The router's own stop / home words (whole utterance: "please stop", not "Cancel my newspaper"), no Jev call.
 const KEYWORDS_ONLY = { ask: async () => { throw new Error('keywords only'); } };
@@ -554,7 +554,13 @@ async function handleUtterance(text, opts = {}, fromPerson = false) {
   if (pendingAsk) { resolveAsk(null, text); return; }
   // Only the person's own spoken or typed words join (never a tile or an answer), and never while a scam warning or
   // episode is on: stopAll would wipe the Scam Shield card, and the Shield would not show it again.
-  if (fromPerson && busyNow() && lastRequest && !warningShown && !(agent && agent._scamOn()) && Date.now() - lastRequest.at < 25000) {
+  const join = fromPerson && busyNow() && lastRequest && !warningShown && !(agent && agent._scamOn()) && Date.now() - lastRequest.at < 25000;
+  // Mid-task, thanks get a warm word and a stray "um" or name ("Erol") nothing: neither is a new request. One word
+  // right after the request can still be its end ("...an email to" "Anne").
+  const talk = fromPerson && busyNow() ? router.smallTalk(text) : null;
+  if (talk === 'thanks') return ui.say("You're welcome!", { wait: false });
+  if (talk === 'filler' || (talk === 'short' && !join)) return log('[heard] not a request, the task goes on');
+  if (join) {
     // Said again soon after, while Barnaby is still starting on it (the owner: a pause cut an older person off and the
     // rest became a new request): it is the same request, finished. Stop and start over with the whole of it.
     log('[heard] continues the last request');
@@ -672,7 +678,7 @@ async function getWeather() {
 
 // ---------- Scam Shield ----------
 let lastScanKey = '';
-const warned = new Map();
+const warned = new Map(), warnedKinds = new Map();
 async function scamShieldTick() {
   if (!native || !guardian) return;
   let fg;
@@ -690,8 +696,7 @@ async function scamShieldTick() {
   try { wt = await native.call('window_text', { hwnd: fg.hwnd, max: 4000 }, 6000); } catch (_) { return; }
   const r = await guardian.checkScreen({ title: wt.title || fg.title, text: wt.text || '' }).catch((e) => { log('checkScreen', e.message); return null; });
   if (!r || !r.scam) return;
-  if (Date.now() - (warned.get(key) || 0) < 10 * 60 * 1000) return;
-  warned.set(key, Date.now());
+  if (!alerts.warnOnce(warned, warnedKinds, fg.hwnd, wt.title || fg.title, r.kind, Date.now())) return;
   if (agent) agent.markScam(); // a scam episode: for the next hour nothing the agent does is routine (R17)
   log('[scam-shield] warning', r.kind); // never the window title or page words (04_safety 7.1)
   ui.warn({ title: r.title || 'This looks like a scam.', body: r.reason || 'This screen is trying to scare you. Do not call any number on it, and do not pay anything.', level: 'scam', kind: r.kind });

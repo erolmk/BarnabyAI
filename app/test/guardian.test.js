@@ -375,3 +375,17 @@ test('gateAction: a confirm the gate thinks sends/pays/deletes carries risky (to
   assert.strictEqual((await G(jevDown()).gateAction(click, ctx)).risky, true, 'Jev down: keyword fallback');
   assert.strictEqual((await G(jevGate('auto', 0.9, 0.8)).gateAction(click, { ...ctx, confirmed: true })).verdict, 'auto', 'a yes on the card is enough');
 });
+
+test('checkScreen: a mail list with one scam subject is not a scam page; an opened scam email still is', async () => {
+  const jev = jevScreen(0.95, 'gift_card');
+  const text = 'Foovee King - Please buy gift cards and send me the numbers on the back\nAmazon Prime - Confirmation of Prime membership change';
+  for (const title of ['Inbox (5,703) - erol@gmail.com - Gmail - Google Chrome', 'Search results - erol@gmail.com - Gmail', 'Mail - Erol Smith - Outlook', 'Inbox - erol@outlook.com - Outlook']) {
+    const r = await G(jev).checkScreen({ title, text });
+    assert.deepStrictEqual([r.scam, r.kind], [false, 'none'], title);
+  }
+  assert.strictEqual(jev.calls.length, 0, 'no Jev call for a list');
+  for (const title of ['Please buy gift cards - erol@gmail.com - Gmail', 'Important - buy gift cards today - erol@gmail.com - Gmail']) {
+    const r = await G(jevScreen(0.95, 'gift_card')).checkScreen({ title, text });
+    assert.deepStrictEqual([r.scam, r.kind], [true, 'gift_card'], title);
+  }
+});

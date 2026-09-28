@@ -117,3 +117,11 @@ test('jev circuit breaker: one failed call, then instant failures until a probe 
   assert.deepStrictEqual((await jev.ask({}, {}, { apiKey: 'k', fetchImpl: good })).answers, { q: { choice: 'task' } });
   assert.strictEqual(jev.stats().circuitOpen, false);
 });
+
+test('smallTalk: mid-task thanks and stray words are not requests', () => {
+  const { smallTalk } = require('../src/router');
+  for (const u of ['Thank you so much, Barnaby.', 'thanks', 'Oh, thank you, that is wonderful!']) assert.strictEqual(smallTalk(u), 'thanks', u);
+  for (const u of ['um', 'Hey Barnaby', 'Uh, okay.', '']) assert.strictEqual(smallTalk(u), 'filler', u);
+  for (const u of ['Erol', 'Anne.', 'um YouTube']) assert.strictEqual(smallTalk(u), 'short', u);
+  for (const u of ['thank you, now open YouTube', 'Now, can you open a new tab?', 'Anne Marie']) assert.strictEqual(smallTalk(u), null, u);
+});

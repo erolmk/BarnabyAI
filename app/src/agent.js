@@ -48,12 +48,69 @@ function planView(ctx) {
     text, state: i + 1 < ctx.planCurrent ? 'done' : i + 1 === ctx.planCurrent ? 'now' : 'next',
   }));
 }
-// A tool result that did not go cleanly: the next step deserves careful thought (thinking policy, auto).
-const SURPRISE = /ERROR|SKIPPED|REFUSED|did not work|didn't work|could not|couldn't|not available|no item|there is no|try (?:again|another)|was closed|need help|outside the highlighted|different page|not connected/i;
+// The model's own words say each thing once per task (the owner's 2026-09-28 session: "Raffi Dill is in the To box" twice,
+// the gift-card email warned about five times). A sentence that shares >= 80% of its words with one already said is
+// dropped, and a suspicious item is talked about in one reply per task (per flagged window). The guardian's refusals and
+// safety lines never pass through here.
+const SCAM_TALK = /gift.?cards?|scam|\btrick\b|suspicious|fraud/i;
+const wordSet = (s) => new Set(String(s).toLowerCase().replace(/['’]/g, '').split(/[^a-z0-9]+/).filter(Boolean));
+function unsaid(text, memo, scamKey = '') {
+  const parts = String(text || '').split(/(?<=[.!?])\s+/).filter((x) => x.trim());
+  const keep = [];
+  let scam = false;
+  for (const p of parts) {
+    const w = wordSet(p);
+    if (SCAM_TALK.test(p)) {
+      if (memo.scam.has(scamKey)) continue;
+      scam = true;
+    } else if (w.size >= 3 && memo.sets.some((m) => [...w].filter((x) => m.has(x)).length / Math.max(w.size, m.size) >= 0.8)) continue;
+    if (w.size >= 3) memo.sets.push(w);
+    keep.push(p);
+  }
+  if (scam) memo.scam.add(scamKey);
+  return keep.length === parts.length ? String(text || '') : keep.join(' ');
+}
+// Words next to a tool whose instruction or explain is spoken (live eval 2026-09-28: 13 of 18 extra sentences only said
+// what was on screen, e.g. "The new message window is open." before "Please type Raffi in that top white box"): a
+// sentence that rewords it (half or more of its content words are in it) is dropped, and before a guide_user so is one
+// that only describes the screen. A leading "I'll start by ..." (7 of 8 first plans) goes always. Scam warnings stay.
+const STOP_WORDS = new Set('the and you your this that with for are was its now then there here will can just all our lets please have has from into onto them they what which when where been also very'.split(' '));
+const START_BY = /^(?:i['’]?ll|i will|i['’]?m going to|let me|let['’]?s) (?:start|begin) by\b/i;
+// Narration next to a tool call (live re-eval 2026-09-28: "I'll help you send Raffi a picture of your cat. Let me look at
+// your screen first. I can see your Gmail is open ... Let me start by finding the cat picture."): dropped wherever it is.
+const NARRATION = /^(?:(?:i['’]?ll|i will|i['’]?m going to|let me|let['’]?s) (?:start|begin) by\b|let me (?:look|check|see|have a look|take a (?:closer |quick )?look)\b|i['’]?ll help you\b|i can see\b|i see (?:that )?your\b)/i;
+const ON_SCREEN = /^(?:the|your|this|that|it|there|here)\b[^?]*?\b(?:is|are|has|have|shows?)\b[^?]*$/i;
+function asideFor(text, calls) {
+  const said = [];
+  let guide = false;
+  for (const c of calls) {
+    const f = (c && c.function) || {};
+    let a = f.arguments;
+    if (typeof a === 'string') { try { a = JSON.parse(a); } catch (_) { a = null; } }
+    const t = a && (f.name === 'guide_user' ? a.instruction : a.explain);
+    if (typeof t === 'string' && t.trim()) said.push(t);
+    if (f.name === 'guide_user') guide = true;
+  }
+  const words = (s) => [...wordSet(s)].filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+  const inSaid = new Set(words(said.join(' ')));
+  const parts = String(text || '').split(/(?<=[.!?])\s+/).filter((x) => x.trim());
+  const keep = parts.filter((p, i) => {
+    if ((i === 0 && START_BY.test(p)) || (calls.length && NARRATION.test(p.trim()))) return false;
+    if (!said.length || SCAM_TALK.test(p)) return true;
+    const w = words(p);
+    if (w.length >= 3 && w.filter((x) => inSaid.has(x)).length * 2 >= w.length) return false;
+    return !(guide && ON_SCREEN.test(p) && !/\b(?:you|please|let['’]?s|we|i)\b/i.test(p));
+  });
+  return keep.length === parts.length ? String(text || '') : keep.join(' ');
+}
 // Jev picks the thinking level per step (the owner's 2026-09-28 test: routine steps thought for 10-20 s). Live probe:
 // routine -> none 0.95-0.99, a new plan -> high 0.54, wrong window -> high 0.68, the person stuck -> high 1.0.
 const LEVELS = ['none', 'low', 'high'];
-const MAX_TOKENS = { none: 1200, low: 2500, high: 6000 }; // room for the thinking plus the reply
+// The thinking plus the reply, and the bound on thinking: reasoning.max_tokens is not honoured for deepseek-v4.1-flash
+// (live probe 2026-09-28: a 200 budget still thought 575 tokens), so this cap bounds it. Measured on a 11k-token first
+// plan: none 1.9 s, low 340-440 reasoning 2.3-3.8 s, high 810-2620 reasoning 6-15 s. A reply cut by the cap is redone
+// at once without thinking (_loop). Before: 1200 / 2500 / 6000, and the owner's session saw 20-57 s high steps.
+const MAX_TOKENS = { none: 1200, low: 1200, high: 2200 };
 const EFFORT_ASK = 'How much should a computer helper think before its next step, guiding an older adult through this task?';
 const EFFORT_CRITERIA = {
   none: 'Routine: the next step is obvious from the goal and the last result.',
@@ -70,7 +127,7 @@ const MODE_TEXT = {
     'For each step use guide_user to point at exactly ONE thing, with one short instruction for ONE action ("Click the red Compose button at the top left."), ' +
     'never two ("type the subject, then click the message area" is two steps: guide the first, look, then guide the next): ' +
     'the yellow ring stays on it and you move on the moment they click inside it. For typing, point at the box and say exactly what to type ' +
-    '(wait_for "done"). Never ask whether you may do a step, never ask "shall I": just show the next step. After each step, look at the new screen ' +
+    '(wait_for "done"); clicking the box and typing in it is one step, and so is typing and pressing Enter. Never ask whether you may do a step, never ask "shall I": just show the next step. After each step, look at the new screen ' +
     'to check it worked, then show the next one (a quick "Well done." now and then). If they miss, point again and describe it more simply ' +
     '(colour, shape, position). If they keep getting stuck, you will be switched to doing it for them.',
   do: 'DO IT FOR ME. You do everything yourself, quickly, still with an explain for every step so they can follow. ' +
@@ -78,7 +135,7 @@ const MODE_TEXT = {
 };
 
 // Shared by the task, support and chat prompts (the owner's change list, 2026-09-28).
-const INFO_RULE = 'Information you need about the computer (is a program installed, what is running, how full the storage is): get it quietly ' +
+const INFO_RULE = 'Information you need about the computer (is a program installed, what is running, how full the storage is): get it yourself ' +
   'with run_check or a read-only run_command, without asking first. Never say or show a command, file path or raw output; tell the person only what it means.';
 
 // The system prompt is static per mode, byte-identical between tasks, so the provider can reuse its cache (research/08 #2).
@@ -90,11 +147,15 @@ HOW YOU TALK
 - Everything you say is read aloud and shown in big letters. Short, plain sentences. Everyday words: "the blue Send button at the bottom left", "the web page", "the box where you type". Never say UI, URL, browser tab, click the element, cursor, icon names in code.
 - Warm and respectful, never childish, never bossy. Never blame the person. If something goes wrong, it is the computer's fault or yours: "That didn't work, let's try another way."
 - Every action carries an explain: ONE sentence, at most about 15 words, spoken as you act: WHAT and WHERE (colour, position, label); add WHY only when it is not obvious. Example: "I'm clicking the red Compose button at the top left." Never repeat the task back (not "To send your photos to Anne Marie, I..."): they know what they asked. Say only the new thing.
+- At most one short sentence of your own before each step, often none. Say each thing once: never repeat something you already said in this task, and never describe what they can already see unless it helps the next step. Talk to the person ("you"), never about them by name.
+- Never narrate your own workings ("let me take a closer look", "I'll start by...", "lining up the steps") and never say the word "quietly": just do it, and tell them only what they need.
+- With guide_user, everything goes in the instruction; say nothing before it.
 
 HOW YOU WORK
 - You are in charge of getting it done. The person says WHAT they want; you work out HOW and do it. Do exactly what they asked, nothing more: no side trips, tours or suggestions they did not ask for.
 - Take the shortest path: fewest steps, known addresses with open instead of searching, keyboard shortcuts when faster. When you are sure of the next few steps, do them in ONE reply (for example click the To box and type_text the address together).
-- Ask only for what you truly cannot find out. First use what you know (in their request message), their contacts, the screen, the open windows, and quiet checks (run_check or a read-only run_command). Never ask permission for routine steps, and never ask about something they already told you. When you must ask: one question, ask_user with 2 to 5 short answer buttons ("I'm not sure" when it fits).
+- Ask only for what you truly cannot find out. First use what you know (in their request message), their contacts, the screen, the open windows, and your own checks (run_check or a read-only run_command). Never ask permission for routine steps, and never ask about something they already told you. When you must ask: one question, ask_user with 2 to 5 short answer buttons ("I'm not sure" when it fits).
+- Find it yourself before asking. An email address you do not know: type the person's name in the To box and let the mail program suggest it (ask only if nothing comes up, or which one when there are several). A file or photo to attach or upload: go straight to the program's own attach button (the paperclip); its file window lets the person pick it and usually opens in Downloads. Never make a separate trip to a folder first.
 - Each turn you see the screen: a screenshot plus a numbered list of things in the active window with their positions. The list holds the exact words and places on the screen: trust it over the picture. ALWAYS use element_id when the thing is in the list (a box, button or link), for click, guide_user and zoom; your x,y from the picture can be off by a line. Give x,y (the centre of the thing, in screenshot pixels) only for something that is not in the list.
 - The screenshot is shrunk, so small text can be blurry. Before you rely on small or unclear text, or to find a small button, call zoom on that area: you get a sharp close-up. Never guess at words you cannot read.
 - Never ask permission for a click, typing, a key, opening something or a check. The only thing you ask about is a big final step: sending, paying, buying, posting or deleting (confirm, then the person presses it).
@@ -125,6 +186,7 @@ SAFETY
 - Before anything that sends, buys, pays or deletes, use confirm with the exact details (not needed in that exception). Nothing else gets a confirm. For an email: To (the full address), Subject, Message, Attachments (file names, or "none").
 - Never install programs. Never open programs that let someone else control the computer (AnyDesk, TeamViewer, Quick Assist and the like). Never buy gift cards, crypto, or send money to someone they do not know well.
 - If a screen looks like a scam (a scary warning with a phone number, "your computer is locked", a prize, a refund, a request for gift cards, codes or remote access): stop, calmly say it looks like a trick, say they are safe as long as they do not call or pay, and offer to close it (press_keys "esc" then "ctrl+w").
+- A suspicious email or message in a list (not opened) is mentioned once in a task, in one short sentence; after that leave it alone unless the person asks, and never bring it up while answering something else.
 - Your own panel docked at the right of the screen is not in the screenshot, and neither is the Windows taskbar: its buttons (Start, Search, the programs with how many windows are open, the clock and the small icons beside it) come as a numbered Taskbar list under the screenshot; use their numbers. A round helper bubble or panel you do see on the screenshot is YOU: ignore it and never click it.`;
 }
 
@@ -490,7 +552,7 @@ class Agent extends EventEmitter {
       check: run.check, sleep: run.sleep, emit: (ev, p) => this.emit(ev, p),
       heard: [goal], // the person's own words this task (R18); tools.js adds their answers
       scamContext: this._scamOn(), remote: () => !!this.remoteSession,
-      plan: null, planCurrent: 0, commandCount: 0, effort: 'low', effortHigh: false, said: [],
+      plan: null, planCurrent: 0, commandCount: 0, effort: 'low', effortHigh: false, said: [], spoken: { sets: [], scam: new Set() },
       // The person's own request told Barnaby to press Send (the guardian checks it again on the click itself).
       sendAsked: mode !== 'teach' && !!safe(() => sendAsked(goal)),
     };
@@ -498,6 +560,8 @@ class Agent extends EventEmitter {
     // person always sees what Barnaby is doing. Chat / scam context also never let a spoken line vouch (R15).
     ctx.status = (st) => this.ui.status({ ...(st || {}), ...(ctx.plan ? { plan: planView(ctx) } : {}), effort: ctx.effort });
     if (mode === 'chat') ctx.noVouch = (t) => noVouch(t);
+    // The model's own words, minus what it already said this task (unsaid). A screen the automatic check flagged gets its own mention.
+    ctx.fresh = (t) => unsaid(t, ctx.spoken, ctx.obs && ctx.obs.scam ? String((ctx.obs.window && ctx.obs.window.title) || '?') : '');
     // Typing must land in the person's app, not in our widget (which takes focus when they tap an answer).
     ctx.focusTarget = async () => {
       const w = ctx.obs && ctx.obs.window;
@@ -543,6 +607,9 @@ class Agent extends EventEmitter {
         blind = o.img ? 0 : blind + 1;
         if (blind >= 3) return out({ limit: 'blind' });
         for (const old of olds) { if (old.fresh) { old.fresh = false; continue; } messages[old.i].content = old.summary; } // a close-up is seen once first
+        // A new screen starts a new turn: earlier turns' reasoning is not needed again (checked live 2026-09-28 on Phala,
+        // Fireworks and Together) and was most of the growth to 20-35k tokens a step (the owner's session: ~20k of 34.5k).
+        for (const m of messages) if (m.role === 'assistant') { delete m.reasoning; delete m.reasoning_details; delete m.reasoning_content; }
         olds.push({ i: messages.length, summary: '[Earlier screen: "' + q(o.window && o.window.title) + '". Old screenshot and item list removed.]' });
         messages.push({ role: 'user', content: o.content });
       }
@@ -551,16 +618,25 @@ class Agent extends EventEmitter {
       run.check();
       ctx.effort = eff.effort;
       ctx.status({ state: 'thinking', step: ctx.steps.length + 1, totalSteps, label: eff.label });
-      const r = await this.llm.chat({
-        apiKey: s.apiKey, model: s.brainModel, fallbackModel: s.fallbackModel, providers: s.providers, messages,
-        tools: tools.schemas(ctx.mode), maxTokens: MAX_TOKENS[eff.effort] || 2500, reasoningEffort: eff.effort,
-      });
-      run.check();
-      run.cost += (r && r.cost) || 0;
-      // Numbers and the provider only, never content (04_safety 7.1): measures the cache share from real use (research/08 #0).
-      const u = (r && r.usage) || {};
-      this.log('[llm]', mode, eff.effort, (u.prompt_tokens || 0) + ' in', ((u.prompt_tokens_details || {}).cached_tokens || 0) + ' cached',
-        (u.completion_tokens || 0) + ' out', (r && r.provider) || '');
+      const think = async (effort) => {
+        const res = await this.llm.chat({
+          apiKey: s.apiKey, model: s.brainModel, fallbackModel: s.fallbackModel, providers: s.providers, messages,
+          tools: tools.schemas(ctx.mode), maxTokens: MAX_TOKENS[effort] || MAX_TOKENS.low, reasoningEffort: effort,
+        });
+        run.check();
+        run.cost += (res && res.cost) || 0;
+        // Numbers and the provider only, never content (04_safety 7.1): measures the cache share from real use (research/08 #0).
+        const u = (res && res.usage) || {};
+        this.log('[llm]', mode, effort, (u.prompt_tokens || 0) + ' in', ((u.prompt_tokens_details || {}).cached_tokens || 0) + ' cached',
+          (u.completion_tokens || 0) + ' out', (res && res.provider) || '');
+        return res;
+      };
+      let r = await think(eff.effort);
+      // Thinking ran into the cap: a cut reply has no usable tool call, so answer again at once without thinking.
+      if (r && r.finish === 'length' && eff.effort !== 'none') {
+        this.log('[think] ' + eff.effort + ' hit the cap, again with none');
+        r = await think('none');
+      }
       // Keep the WHOLE assistant message (reasoning_details etc.) or the next call can fail.
       const msg = (r && r.message) || { role: 'assistant', content: '' };
       if (!msg.role) msg.role = 'assistant';
@@ -569,7 +645,7 @@ class Agent extends EventEmitter {
 
       if (!calls.length) {
         const text = spoken(contentText(msg.content));
-        if (text) { const t = ctx.noVouch ? ctx.noVouch(text) : text; if (t) { ctx.said.push(t); await this.ui.say(t); run.check(); } }
+        if (text) { const t = ctx.fresh(ctx.noVouch ? ctx.noVouch(text) : text); if (t) { ctx.said.push(t); await this.ui.say(t); run.check(); } }
         if (++textOnly < 2) {
           messages.push({ role: 'user', content: 'Please continue by calling one of your tools. If the task is finished, call done. If you need the person, use ask_user.' });
           continue;
@@ -585,9 +661,10 @@ class Agent extends EventEmitter {
       textOnly = 0;
       // Words written next to tool calls are meant for the person ("Well done! Now the address."): say them
       // first. Long text is a model thinking out loud, not something to read to them.
-      const aside0 = spoken(contentText(msg.content));
-      const aside = aside0 && ctx.noVouch ? ctx.noVouch(aside0) : aside0;
-      if (aside && aside.length <= 300) { ctx.said.push(aside); await this.ui.say(aside); run.check(); }
+      const aside0 = asideFor(spoken(contentText(msg.content)), calls);
+      const aside1 = aside0 && ctx.noVouch ? ctx.noVouch(aside0) : aside0;
+      const aside = aside1 && aside1.length <= 300 ? ctx.fresh(aside1) : '';
+      if (aside) { ctx.said.push(aside); await this.ui.say(aside); run.check(); }
 
       const results = [];
       for (let i = 0; i < calls.length; i++) {
@@ -600,6 +677,7 @@ class Agent extends EventEmitter {
           let args = f.arguments;
           if (typeof args === 'string') { try { args = args.trim() ? JSON.parse(args) : {}; } catch (_) { args = null; } }
           if (!args || typeof args !== 'object') result = 'ERROR: the arguments were not valid JSON. Try again.';
+          else if (f.name === 'say' && typeof args.text === 'string' && !(args.text = ctx.fresh(args.text)).trim()) result = 'Said.'; // all said before
           else {
             try {
               result = await tools.execute({ name: f.name, args }, ctx);
@@ -641,23 +719,20 @@ class Agent extends EventEmitter {
   }
 
   // Reasoning effort for the next brain call (thinking policy). setting thinking: always -> high, never -> none.
-  // auto: one Jev choice none / low / high (~200 ms, run beside the look); confidence under 0.5 takes the higher of its
-  // top two, and a surprise or a mode switch thinks at least a little. Jev down, slow (1.5 s) or circuit open -> the rules.
-  // Never rejects: _loop starts it before the look and awaits it after.
+  // auto: every step starts at none; support diagnosis and the step after a mode switch at low. One Jev choice
+  // none / low / high (~200 ms, run beside the look) can only raise it, and only when it picks low or high with
+  // confidence >= 0.6. Live eval 2026-09-28 (60 calls, deepseek-v4.1-flash): thinking never improved an answer; the
+  // first plan took 1.6-2.3 s at none vs 12-16 s at low/high, and after a surprise none was 8/8 right at 0.6-3.0 s;
+  // Jev's confidence was 0.32-0.54 on every decision. Jev down, slow (1.5 s) or circuit open -> the floor.
+  // Never rejects: _loop starts it before the look, awaits after.
   async _effort(ctx, run, step) {
     const t = (ctx.settings && ctx.settings.thinking) || 'auto';
     if (t === 'always') return { effort: 'high', label: 'Thinking carefully about this' };
     if (t === 'never') return { effort: 'none', label: 'Thinking about the next step' };
-    const surprise = (ctx.lastResults || []).some((r) => SURPRISE.test(r));
-    const floor = surprise || ctx.modeChanged ? 1 : 0;
+    const diagnose = ctx.mode === 'support' && !ctx.fixProposed;
+    const floor = diagnose || ctx.modeChanged ? 1 : 0;
     ctx.modeChanged = false;
-    // The rules (the owner's 2026-09-28 session: a sticky "high" made every step 5-10 s): high only for the first plan,
-    // the step right after something went wrong, and support diagnosis; routine steps think quickly.
-    const rules = step === 1 ? { effort: 'high', label: 'Thinking about the best way to do this' }
-      : surprise ? { effort: 'high', label: 'Working out what to do next' }
-      : ctx.mode === 'support' && !ctx.fixProposed ? { effort: 'high', label: 'Thinking about what to check' }
-      : ctx.mode === 'chat' ? { effort: 'high', label: 'Thinking about your question' }
-      : { effort: 'low', label: 'Thinking about the next step' };
+    const rules = { effort: LEVELS[floor], label: diagnose ? 'Thinking about what to check' : ctx.mode === 'chat' ? 'Thinking about your question' : 'Thinking about the next step' };
     const s = ctx.settings || {};
     const t0 = Date.now();
     try {
@@ -667,16 +742,11 @@ class Agent extends EventEmitter {
         last_results: (ctx.lastResults || []).map((r) => clip(r, 160)),
       };
       const a = await this.jev.choice(state, EFFORT_ASK, EFFORT_CRITERIA, { apiKey: s.apiKey, model: s.jevModel, timeoutMs: 1500, retries: 0 });
-      let lvl = LEVELS.indexOf(a && a.choice);
+      const lvl = LEVELS.indexOf(a && a.choice);
       if (lvl < 0) throw new Error('jev: no level');
-      if (!(a.confidence >= 0.5)) { // unsure: the higher of its top two
-        const p = a.probabilities || {};
-        const second = LEVELS.filter((x, i) => i !== lvl && p[x] > 0).sort((x, y) => p[y] - p[x])[0];
-        if (second) lvl = Math.max(lvl, LEVELS.indexOf(second));
-      }
-      const effort = LEVELS[Math.max(lvl, floor)];
+      const effort = LEVELS[Math.max(a.confidence >= 0.6 ? lvl : 0, floor)]; // Jev only decides up, and only when sure
       this.log('[think] ' + effort + ' jev ' + Number(a.confidence).toFixed(2) + ' ' + (Date.now() - t0) + 'ms');
-      return { effort, label: effort !== 'high' ? 'Thinking about the next step' : rules.effort === 'high' ? rules.label : 'Working out what to do next' };
+      return { effort, label: effort === 'high' ? 'Working out what to do next' : rules.label };
     } catch (e) {
       this.log('[think] ' + rules.effort + ' rules ' + (Date.now() - t0) + 'ms (' + clip(e && e.message, 60) + ')');
       return rules;
@@ -695,7 +765,21 @@ class Agent extends EventEmitter {
       try { target = await native.call('foreground', {}, 3000); } catch (_) { target = null; }
       run.check();
     }
-    if (!target || !target.hwnd || target.pid === ui.ownPid) target = safe(() => ui.lastTarget()) || null;
+    // The task's window from the last look while it is open and not minimized; once it has closed (a file picker after
+    // the pick, the owner's 2026-09-28 session), the top window on the task's screen.
+    const taskWin = () => {
+      const l = run.look, ok = (w) => w && !w.minimized && w.pid !== ui.ownPid;
+      if (!l || run.follow) return null;
+      if (wins.some((w) => w && w.hwnd === l.hwnd)) return wins.find((w) => ok(w) && w.hwnd === l.hwnd) || null;
+      return wins.find((w) => ok(w) && Array.isArray(w.rect) && inRect(l.monitor, w.rect[0] + w.rect[2] / 2, w.rect[1] + w.rect[3] / 2)) || null;
+    };
+    if (!target || !target.hwnd || target.pid === ui.ownPid) {
+      // Our own panel is in front (the person pressed its green button): the task's window from the last look, while it is
+      // still open and not minimized, wins over the last window used (the owner's 2026-09-28 session: an Explorer window
+      // on the laptop screen was captured and a taskbar button on that screen was ringed). After Barnaby opened
+      // something itself, the last window used is the new one.
+      target = taskWin() || safe(() => ui.lastTarget()) || null;
+    }
     // Stay on the person's screen (the owner's 2026-09-28 session: a window on the laptop screen came to the front and the
     // next look captured that screen and its taskbar). A different window that was already open, on another screen than
     // the task's window, is not followed while the task's window is still there and not minimized. Followed: the same
@@ -704,8 +788,8 @@ class Agent extends EventEmitter {
     let stayed = false;
     if (prev && !run.follow && target && target.hwnd && target.hwnd !== prev.hwnd && prev.known.has(target.hwnd) &&
         Array.isArray(target.rect) && !inRect(prev.monitor, target.rect[0] + target.rect[2] / 2, target.rect[1] + target.rect[3] / 2)) {
-      const old = wins.find((w) => w && w.hwnd === prev.hwnd);
-      if (old && !old.minimized) { target = old; stayed = true; }
+      const old = taskWin();
+      if (old) { target = old; stayed = true; }
     }
     run.follow = false;
 

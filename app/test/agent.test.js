@@ -276,6 +276,7 @@ test('Show me how: missing the ring twice, a timeout, or "I need help" twice swi
   assert.ok(toolsOf(h, 2).includes('click') && switched(h, 2), 'two misses in a row: Barnaby does it');
   assert.ok(h.ui.said.some((t) => /do the next steps for you/.test(t)));
   assert.ok(h.native.calls.some((c) => c.cmd === 'click_element' && c.args.id === 1), 'the click now runs');
+  assert.deepEqual(h.llm.calls.slice(0, 3).map((c) => c.reasoningEffort), ['none', 'none', 'low'], 'the step after a mode switch thinks a little');
 
   // miss, hit, miss: never two in a row, stays "Show me how"
   let n = 0;
@@ -430,25 +431,29 @@ test('image <-> physical coordinates with factor 2.25 and an origin offset', asy
 });
 
 // ---------- (8) history ----------
-test('history keeps reasoning_details and only the newest screenshot', async () => {
-  const first = { ...assistant(tc('click', { element_id: 1, explain: 'Clicking Compose.' })), reasoning_details: [{ type: 'reasoning.encrypted', data: 'abc123' }] };
-  const h = makeAgent({ script: [first, assistant(tc('click', { element_id: 3, explain: 'Clicking To.' })), assistant(tc('done', { summary: 'Done.' }))] });
+test('history: only the newest screenshot; reasoning goes back within a turn and is dropped once a new screen comes', async () => {
+  const first = { ...assistant(tc('click', { element_id: 1, explain: 'Clicking Compose.' })), reasoning_details: [{ type: 'reasoning.encrypted', data: 'abc123' }], reasoning: 'Compose first.' };
+  const second = { ...assistant(tc('say', { text: 'The To box is next.' })), reasoning_details: [{ type: 'reasoning.encrypted', data: 'def456' }] };
+  const h = makeAgent({ script: [first, second, assistant(tc('click', { element_id: 3, explain: 'Clicking To.' })), assistant(tc('done', { summary: 'Done.' }))] });
   await h.agent.runTask('write an email');
-  const msgs = h.llm.calls[2].messages;
+  const msgs = h.llm.calls[2].messages; // after the say: no new screen, the same turn
   const images = msgs.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((p) => p.type === 'image_url');
   assert.equal(images.length, 1);
   const lastUser = msgs.filter((m) => m.role === 'user').at(-1);
   assert.ok(Array.isArray(lastUser.content) && lastUser.content[1].type === 'image_url');
-  assert.equal(msgs.filter((m) => typeof m.content === 'string' && m.content.startsWith('[Earlier screen')).length, 2);
-  const a1 = msgs.find((m) => m.role === 'assistant');
-  assert.deepEqual(a1.reasoning_details, [{ type: 'reasoning.encrypted', data: 'abc123' }]);
+  assert.equal(msgs.filter((m) => typeof m.content === 'string' && m.content.startsWith('[Earlier screen')).length, 1);
+  const [a1, a2] = msgs.filter((m) => m.role === 'assistant');
+  assert.equal(a1.reasoning_details, undefined, 'an earlier turn: its reasoning is not sent again');
+  assert.equal(a1.reasoning, undefined);
+  assert.deepEqual(a2.reasoning_details, [{ type: 'reasoning.encrypted', data: 'def456' }], 'the current turn keeps its reasoning');
   const tool1 = msgs[msgs.indexOf(a1) + 1];
   assert.equal(tool1.role, 'tool');
   assert.equal(tool1.tool_call_id, a1.tool_calls[0].id);
-  assert.equal(h.llm.calls[0].maxTokens, 6000, 'room for high-effort thinking plus the reply');
-  assert.equal(h.llm.calls[1].maxTokens, 2500);
-  assert.equal(h.llm.calls[0].reasoningEffort, 'high', 'the first step of a task thinks hard (auto policy)');
-  assert.equal(h.llm.calls[1].reasoningEffort, 'low', 'a routine continuation step is quick');
+  assert.equal(h.llm.calls[3].messages.filter((m) => m.role === 'assistant')[1].reasoning_details, undefined, 'dropped after the next screen');
+  assert.equal(h.llm.calls[0].maxTokens, 1200);
+  assert.equal(h.llm.calls[1].maxTokens, 1200);
+  assert.equal(h.llm.calls[0].reasoningEffort, 'none', 'the first step of a task is fast too (auto policy)');
+  assert.equal(h.llm.calls[1].reasoningEffort, 'none', 'a routine continuation step is quick');
 });
 
 // ---------- more behaviour ----------
@@ -808,15 +813,15 @@ test('set_plan: the plan rides on every status, current step marked, and advance
   assert.deepEqual(first.plan.map((p) => p.state), ['now', 'next', 'next']);
   const later = withPlan.at(-1);
   assert.deepEqual(later.plan.map((p) => p.state), ['done', 'now', 'next'], 'step 2 is now current');
-  assert.ok(h.ui.statuses.some((s) => s.effort === 'high') && h.ui.statuses.some((s) => s.effort === 'low'), 'effort is reported');
+  assert.ok(h.ui.statuses.some((s) => s.state === 'thinking' && s.effort === 'none'), 'effort is reported');
 });
 
-test('thinking policy: first step high, routine low, always/never override', async () => {
+test('thinking policy: none by default (first step too), always/never override', async () => {
   const two = () => [assistant(tc('scroll', { direction: 'down', explain: 'Scrolling.' })), assistant(tc('scroll', { direction: 'down', explain: 'More.' })), assistant(tc('done', { summary: 'ok' }))];
   const auto = makeAgent({ settings: { thinking: 'auto' }, script: two() });
   await auto.agent.runTask('scroll a bit');
-  assert.equal(auto.llm.calls[0].reasoningEffort, 'high');
-  assert.equal(auto.llm.calls[1].reasoningEffort, 'low');
+  assert.equal(auto.llm.calls[0].reasoningEffort, 'none');
+  assert.equal(auto.llm.calls[1].reasoningEffort, 'none');
 
   const always = makeAgent({ settings: { thinking: 'always' }, script: two() });
   await always.agent.runTask('scroll a bit');
@@ -826,7 +831,7 @@ test('thinking policy: first step high, routine low, always/never override', asy
   await never.agent.runTask('scroll a bit');
   assert.ok(never.llm.calls.filter((c) => c.tools).every((c) => c.reasoningEffort === 'none'));
 
-  // a surprise (an error result) makes the next step think hard again
+  // a surprise (an error result) no longer forces thinking (live eval: none was 8/8 right after a surprise)
   const surprise = makeAgent({ settings: { thinking: 'auto' }, script: [
     assistant(tc('click', { element_id: 1, explain: 'Clicking.' })),
     assistant(tc('click', { element_id: 999, explain: 'Clicking the missing one.' })),
@@ -834,7 +839,7 @@ test('thinking policy: first step high, routine low, always/never override', asy
     assistant(tc('done', { summary: 'ok' })),
   ] });
   await surprise.agent.runTask('do it');
-  assert.equal(surprise.llm.calls[2].reasoningEffort, 'high', 'after the missing-item error, think hard');
+  assert.equal(surprise.llm.calls[2].reasoningEffort, 'none', 'after the missing-item error, still fast');
 });
 
 test('providers from settings are pinned on every brain call, fallback stays empty', async () => {
@@ -1182,4 +1187,43 @@ test("Stop while routing drops the request; a guide answered in words ends its m
   const cmds = g.native.calls.map((c) => c.cmd);
   assert.ok(cmds.indexOf("cancel_wait") > cmds.indexOf("wait_click"), "the hook is cancelled after the spoken answer");
   assert.match(g.toolResults(1).at(-1), /said they did it/);
+});
+
+test("Barnaby's own panel in front: the look takes the task's window, not the last window used (S7)", async () => {
+  const gmail = { ...F.GMAIL_WINDOW, rect: [0, 0, 1280, 1032], minimized: false };
+  const explorer = { hwnd: 700, title: "Downloads", process: "explorer", pid: 7000, rect: [-441, 1080, 2880, 1700], minimized: false };
+  const own = { hwnd: 300, title: "Barnaby", process: "electron", pid: 1, rect: [1280, 0, 640, 1032] };
+  const run = async (second) => {
+    let n = 0;
+    const h = makeAgent({
+      nativeOpts: {
+        img: IMG1, elements: COMPOSE, workArea: (a) => (a.hwnd === 700 ? LAPTOP : PRIMARY),
+        windows: () => ({ windows: ++n === 1 ? [{ ...gmail, foreground: true }, explorer, own] : second }),
+      },
+      script: [assistant(tc("guide_user", { element_id: 3, instruction: "Please click the To box.", wait_for: "click" }))],
+    });
+    h.ui.lastTarget = () => explorer;
+    await h.agent.runTask("email Rafi", { mode: "teach" });
+    return h.native.calls.filter((c) => c.cmd === "screenshot").map((c) => c.args.hwnd);
+  };
+  assert.deepEqual(await run([gmail, explorer, { ...own, foreground: true }]), [100, 100], "the task's window");
+  assert.deepEqual(await run([{ ...gmail, minimized: true }, explorer, { ...own, foreground: true }]), [100, 700], "minimized: the last window used");
+});
+
+test("the task's window closed (the file picker after the pick) and our panel in front: the top window on the task's screen (S7)", async () => {
+  const gmail = { ...F.GMAIL_WINDOW, rect: [0, 0, 1280, 1032], minimized: false };
+  const picker = { hwnd: 800, title: "Open", process: "chrome", pid: F.GMAIL_WINDOW.pid, rect: [200, 150, 900, 600], minimized: false };
+  const explorer = { hwnd: 700, title: "Downloads", process: "explorer", pid: 7000, rect: [-441, 1080, 2880, 1700], minimized: false };
+  const own = { hwnd: 300, title: "Barnaby", process: "electron", pid: 1, rect: [1280, 0, 640, 1032] };
+  let n = 0;
+  const h = makeAgent({
+    nativeOpts: {
+      img: IMG1, elements: COMPOSE, workArea: (a) => (a.hwnd === 700 ? LAPTOP : PRIMARY),
+      windows: () => ({ windows: ++n === 1 ? [{ ...picker, foreground: true }, gmail, explorer, own] : [{ ...own, foreground: true }, explorer, gmail] }),
+    },
+    script: [assistant(tc("guide_user", { element_id: 3, instruction: "Please click the cat photo.", wait_for: "click" }))],
+  });
+  h.ui.lastTarget = () => explorer;
+  await h.agent.runTask("email Rafi", { mode: "teach" });
+  assert.deepEqual(h.native.calls.filter((c) => c.cmd === "screenshot").map((c) => c.args.hwnd), [800, 100]);
 });

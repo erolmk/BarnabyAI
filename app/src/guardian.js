@@ -75,6 +75,11 @@ const PRESS = /\b(?:enter|return|space)\b/;
 const TAB_THEN_PRESS = /\btab\b.*\b(?:enter|return|space)\b/; // Gmail: Tab from the message lands on Send
 const CHAT_WIN = /\b(?:whatsapp|messenger|teams|skype|signal|telegram|discord|messages|imessage|chat)\b/; // Enter sends here
 const MAIL_WIN = /\b(?:gmail|outlook|mail|inbox|yahoo|aol)\b/;
+// A mail folder's list view by its title: "Inbox (5,703) - me@gmail.com - Gmail", "Mail - Erol - Outlook" (the folder,
+// one account part, the provider: an opened message "Important - verify now - me@gmail.com - Gmail" is not one).
+// ponytail: Outlook on the web keeps "Mail - ..." with a message open in the reading pane, so that one is not checked;
+// Outlook's own message window and every opened Gmail or Yahoo message (subject as title) are.
+const MAIL_LIST = /^(?:inbox|primary|promotions|social|updates|starred|snoozed|important|sent(?: mail| items)?|drafts?|scheduled|all mail|spam|junk(?: email)?|trash|deleted items|archive|outbox|search results|mail)(?: \([\d,.]+\))? - (?:(?! - ).)* - (?:gmail|outlook|yahoo mail|aol mail)\b/;
 // The person's own mail program (window title + process), for the Send exception: not any page with "mail" in its title.
 const MAIL_APP = /(?:- gmail|mail - [^-]*- outlook|outlook\.com|yahoo mail|aol mail)\b|\b(?:outlook|olk|hxoutlook)(?:\.exe)?$/;
 const MESSAGE_BOX = /\b(?:message|body|reply|comment|compose|write)\b/; // a message draft, not an address bar
@@ -584,6 +589,9 @@ class Guardian {
 
   // -> {scam, probability, reason, title, matched, kind}
   async checkScreen({ title, text } = {}) {
+    // A mail LIST only shows subjects: one scam subject in it is not a scam page (the owner's Gmail inbox was
+    // warned about, "closed" and made a scam episode). An opened email has its subject as the title: still checked.
+    if (MAIL_LIST.test(norm(title))) return { scam: false, probability: 0, reason: '', title: '', matched: [], kind: 'none' };
     const pf = this.prefilter((title || '') + '\n' + (text || ''));
     if (!pf.hit) return { scam: false, probability: 0, reason: '', title: '', matched: pf.matched, kind: 'none' };
     let p, kind;

@@ -100,7 +100,7 @@ test('a click outside the ring names what was clicked and is a miss only when no
   assert.ok(!changed.stuck, 'a new window came up: not a miss');
 });
 
-test('Barnaby\'s own click snaps x,y only to the item under it or the one it names; the ring keeps the nearest item', async () => {
+test('Barnaby\'s own click and the ring snap x,y only to the item under it or the one it names', async () => {
   const els = [{ id: 1, name: 'Archive', role: 'Button', rect: [900, 900, 180, 90], enabled: true }];
   // (900-30)/2.25 = 386.7: 30 px left of the button, within the 40-picture-px fallback
   const x = (900 - 30) / F.IMG.factor, y = 945 / F.IMG.factor;
@@ -113,6 +113,70 @@ test('Barnaby\'s own click snaps x,y only to the item under it or the one it nam
   await tools.execute({ name: 'click', args: { x, y, explain: 'Clicking Archive.' } }, makeCtx({ native: named, mode: 'do', elements: els }));
   assert.deepEqual(named.calls.find((c) => c.cmd === 'click').args, { x: 990, y: 945, button: 'left', double: false }, 'named: snapped');
   const g = makeCtx({ native: nat({ wait_click: (a) => click('left', a.rect) }), elements: els });
-  await guide(g, { x, y, instruction: 'Please click there.' });
-  assert.deepEqual(g.ui.highlights[0].rect, els[0].rect, 'the ring still snaps to the nearest item');
+  const r = await guide(g, { x, y, instruction: 'Please click there.' });
+  assert.notDeepEqual(g.ui.highlights[0].rect, els[0].rect, 'the ring does not snap to a merely nearby item');
+  assert.match(r, /^That thing is not in the item list; if the ring looks wrong, zoom there first\./);
+});
+
+// The owner's 2026-09-28b session, word for word.
+test('one step: click-and-type, type then Enter, type then stop pass; typing then clicking elsewhere is two', async () => {
+  const ok = [
+    'Please type Rossi in the search box, then stop \u2014 don\'t press Enter yet.',
+    'Please click the search box at the top of your mail and type Rossi, then press Enter.',
+    'Please click the long white address bar at the top, type youtube.com, then press Enter.',
+    'Please click the To box, then type Raffi.',
+    'Please click the To box and type Raffi.',
+    'Please type Raffi in the To box at the top of the message, then wait a moment.', // live eval: 5 of 12 were refused
+    'Please click the blue Send button, then wait for it to go.',
+  ];
+  for (const instruction of ok) {
+    const ctx = makeCtx({ native: nat(), answer: (a) => a.green });
+    assert.match(await guide(ctx, { element_id: 3, instruction, wait_for: 'done' }), /said they did it/, instruction);
+  }
+  const two = [
+    'Please type a short subject for your email in the Subject box, then click into the big message area below and write your message.',
+    'Please click Compose, then click the To box.',
+  ];
+  for (const instruction of two) {
+    assert.match(await guide(makeCtx({ native: nat() }), { element_id: 3, instruction }), /^ERROR: one thing per step/, instruction);
+  }
+});
+
+test('a click in Barnaby\'s own panel or window while the ring waits is ignored, never a miss', async () => {
+  const own = [{ clicked: true, x: 3645, y: 686, button: 'left', inRect: false }, { clicked: true, x: 10, y: 10, button: 'left', inRect: false }];
+  const native = nat({ wait_click: (a, n) => own[n] || click('left', a.rect), window_at: (a) => ({ pid: a.x === 10 ? 1 : 4242 }) });
+  const ctx = makeCtx({ native });
+  ctx.ui.dockedPanel = () => [2880, 0, 1440, 1548];
+  const r = await guide(ctx, { element_id: 1, instruction: 'Please click the OK button in the little box.' });
+  assert.match(r, /clicked inside the highlighted area/);
+  assert.equal(native.cmds().filter((c) => c === 'wait_click').length, 3, 'kept waiting after both own clicks');
+  assert.ok(!ctx.stuck);
+});
+
+test('a miss that Windows reports on our own full-screen ring overlay still counts as a miss', async () => {
+  const native = nat({ wait_click: () => ({ clicked: true, x: 10, y: 10, button: 'left', inRect: false }), window_at: () => ({ pid: 1, rect: [0, 0, 2880, 1620] }) });
+  const ctx = makeCtx({ native });
+  ctx.obs.monitor = [0, 0, 2880, 1620];
+  const r = await guide(ctx, { element_id: 1, instruction: 'Please click the OK button in the little box.' });
+  assert.match(r, /clicked outside the highlighted area/);
+  assert.equal(native.cmds().filter((c) => c === 'wait_click').length, 1);
+});
+
+test('the ring never snaps to an inbox row it does not name; zoom never snaps', async () => {
+  const row = { id: 160, name: 'unread, Amazon Prime , Confirmation of Prime membership change', role: 'DataItem', rect: [400, 1080, 2000, 90], enabled: true };
+  const els = [...F.GMAIL_ELEMENTS, row];
+  const ring = async (instruction, w, h) => {
+    const ctx = makeCtx({ native: nat({ wait_typing: () => new Promise(() => {}) }), answer: (a) => a.green, elements: els });
+    return { r: await guide(ctx, { x: 300, y: 490, w, h, instruction, wait_for: 'done' }), rect: ctx.ui.highlights[0].rect };
+  };
+  const to = await ring('Please click the To box and type Raffi.', 480, 28);
+  assert.deepEqual(to.rect, [135, 1071, 1080, 63], 'the model\'s own rect, not the inbox row under it');
+  assert.match(to.r, /^That thing is not in the item list; if the ring looks wrong, zoom there first\. The person said they did it/);
+  const named = await ring('Please click the email from Amazon Prime.');
+  assert.deepEqual(named.rect, row.rect, 'the row it names');
+  assert.match(named.r, /^I used the listed item \[160\]/);
+  const shot = nat({ screenshot: { png: 'x' } });
+  const z = await tools.execute({ name: 'zoom', args: { x: 900, y: 490, w: 620, h: 200 } }, makeCtx({ native: shot, elements: els }));
+  assert.equal(z, 'Here is the close-up of the area around x=900, y=490 (next message). Use the numbered list for clicking; the close-up is only for reading.');
+  assert.deepEqual(shot.calls.find((c) => c.cmd === 'screenshot').args, { x: 1328, y: 878, width: 1395, height: 450, maxWidth: 1280, hwnd: 100 });
 });
