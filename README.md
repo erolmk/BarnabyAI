@@ -1,5 +1,7 @@
 # BarnabyAI
 
+![Barnaby](docs/images/banner.png)
+
 **Help that never hurries.** Barnaby is a patient computer helper for older adults that lives on the Windows PC they already own. You say what you need; Barnaby does the fiddly clicks, explains each step, leaves the personal decisions to you (you pick, you type passwords, you press Yes) and warns you about scams.
 
 Built at Origin Weekend F26 (USC) for Prompt G: AI for the Aging Population.
@@ -7,6 +9,26 @@ Built at Origin Weekend F26 (USC) for Prompt G: AI for the Aging Population.
 - **Try it in your browser:** https://try-barnaby.seamengine.workers.dev
 - **Install on Windows:** build the installer from `app/` (see below). Setup asks for an OpenRouter API key; no keys are stored in this repository.
 - **What's inside:** `app/` (the Electron app and its C# UI Automation helper), `research/` (market, UX, safety, voice and cost research), `website/`, and `SPEC.md` (the architecture).
+
+---
+
+## Screenshots
+
+**The home screen:** big tiles, one big "Talk to Barnaby" button.
+
+![Barnaby home screen](docs/images/home-screen.jpg)
+
+**Barnaby at work:** the helper panel says what it is doing right now and shows the plan, step by step.
+
+<img src="docs/images/helper-panel.png" alt="Barnaby's helper panel showing step 2 of 4, Clicking New mail, with the plan checklist" width="360">
+
+**You stay in charge:** before anything is sent, you check it and press Yes yourself.
+
+<img src="docs/images/confirm-card.jpg" alt="Confirm card: This will go to Anne Marie. Is everything right?" width="300">
+
+**A real run:** "Email my photos to Anne Marie".
+
+![Recording of Barnaby helping send photos by email](docs/images/demo.webp)
 
 ---
 
