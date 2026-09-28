@@ -1,3 +1,15 @@
+# BarnabyAI
+
+**Help that never hurries.** Barnaby is a patient computer helper for older adults that lives on the Windows PC they already own. You say what you need; Barnaby does the fiddly clicks, explains each step, leaves the personal decisions to you (you pick, you type passwords, you press Yes) and warns you about scams.
+
+Built at Origin Weekend F26 (USC) for Prompt G: AI for the Aging Population.
+
+- **Try it in your browser:** https://try-barnaby.seamengine.workers.dev
+- **Install on Windows:** build the installer from `app/` (see below). Setup asks for an OpenRouter API key; no keys are stored in this repository.
+- **What's inside:** `app/` (the Electron app and its C# UI Automation helper), `research/` (market, UX, safety, voice and cost research), `website/`, and `SPEC.md` (the architecture).
+
+---
+
 # Barnaby — "Help that never hurries."
 
 A voice-first helper that lives on an older adult's Windows PC. It shows a big, calm home screen and a
