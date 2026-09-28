@@ -375,6 +375,7 @@
 
   // ---------- talking ----------
   let listening = false, talking = false, smooth = 0, micShown = false;
+  let holdDown = false, holdTimer = null; // hold to talk (wiring below)
   let talkGen = 0; // Stop / Home bump it so a transcription that finishes later is dropped, not sent
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   // The real cause when the recording could not be written down (main returns the connection's error kind);
@@ -396,7 +397,7 @@
     $('meter').hidden = !!offline;
     $('talkBtn').classList.toggle('listening', listening);
     $('talkBtn').setAttribute('aria-pressed', String(listening));
-    $('talkLabel').textContent = listening ? 'Done talking' : 'Talk to ' + NAME;
+    $('talkLabel').textContent = listening ? (holdDown ? 'Listening… let go when you’re done' : 'Done talking') : 'Hold to talk to ' + NAME;
     if (!listening) { smooth = 0; $('meterFill').style.width = '0%'; }
     // A closed microphone keeps the "Please wait" of an answer just given (a cancelled auto mic closes after it).
     if (listening) setLocal({ state: 'listening' }); else if (!(localStatus && localStatus.wait)) setLocal(null);
@@ -406,11 +407,13 @@
 
   // How long a pause ends what he says: short for a one-word choice, longer for a sentence (UX 9.2 allows 1.0-3.0 s).
   // ponytail: fixed per context; UX 9.2's "+0.4 s after being cut off twice" is the upgrade.
-  const END_MS = { choice: 1000, text: 1400, free: 1300 };
+  // The owner (2026-09-28): 1.0-1.4 s cut older people off mid-sentence. Holding Talk never ends on a pause at all.
+  const END_MS = { choice: 1500, text: 2500, free: 2500 };
   let autoMic = false, heardNow = false; // the open microphone was opened by a question, and whether he has spoken yet
   // opt.auto: opened by itself after a question was said (quiet: no nagging lines if nobody speaks).
   async function talk(opt) {
     const auto = !!(opt && opt.auto === true);
+    const hold = !!(opt && opt.hold === true); // Talk is held down: listen until it is let go
     if (listening) { if (!auto) (DEMO ? demoMic : V).finish(); return; }
     if (talking) { if (!auto) say('One moment — I’m working out what you said.'); return; }
     talking = true;
@@ -420,7 +423,7 @@
     try {
       hush(); // barge-in: stop speaking first
       if (!settings.muted && !DEMO) V.earcon('open');
-      await wait(300); // do not hear our own last word (and the tone is over before the microphone opens)
+      await wait(hold ? 150 : 300); // do not hear our own last word (and the tone is over before the microphone opens)
       if (my !== talkGen) return;
       listening = true;
       autoMic = auto; heardNow = false;
@@ -428,7 +431,8 @@
       let rec = null;
       try {
         rec = await (DEMO ? demoMic : V).listen({ onLevel: setLevel, onState: (st) => { if (st === 'hearing') heardNow = true; },
-          silenceMs: !openAsk ? END_MS.free : openAsk.kind === 'choice' && (openAsk.choices || []).length ? END_MS.choice : END_MS.text, noSpeechMs: 8000 });
+          silenceMs: hold ? 600000 : !openAsk ? END_MS.free : openAsk.kind === 'choice' && (openAsk.choices || []).length ? END_MS.choice : END_MS.text,
+          noSpeechMs: hold ? 600000 : 8000, maxMs: hold ? 90000 : 30000 });
       } catch (e) {
         listening = false;
         renderListening();
@@ -542,7 +546,25 @@
   $('pill').addEventListener('click', () => expand(true));
   $('smallBtn').addEventListener('click', () => expand(false));
   $('smallBtn2').addEventListener('click', () => expand(false));
-  $('talkBtn').addEventListener('click', talk);
+  // Hold to talk (the owner, 2026-09-28): press and hold, the button grows, speak, let go. A quick tap still works: it
+  // listens until a long pause. Keyboard Enter/Space (click with detail 0) toggles like before.
+  function pressTalk() {
+    if (listening || talking) { holdTimer = null; talk(); return; } // a tap on an open microphone finishes it
+    holdTimer = setTimeout(() => { holdTimer = null; holdDown = true; $('talkBtn').classList.add('holding'); talk({ hold: true }); }, 250);
+  }
+  function releaseTalk() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; talk(); return; } // a quick tap: listen until a pause
+    if (!holdDown) return;
+    holdDown = false;
+    $('talkBtn').classList.remove('holding');
+    renderListening();
+    const stop = () => { if (listening) (DEMO ? demoMic : V).finish(); else if (talking) setTimeout(stop, 50); };
+    stop();
+  }
+  $('talkBtn').addEventListener('pointerdown', (e) => { if (e.button === 0) { e.preventDefault(); $('talkBtn').setPointerCapture(e.pointerId); pressTalk(); } });
+  $('talkBtn').addEventListener('pointerup', releaseTalk);
+  $('talkBtn').addEventListener('pointercancel', releaseTalk);
+  $('talkBtn').addEventListener('click', (e) => { if (e.detail === 0) talk(); });
   $('typeBtn').addEventListener('click', typed);
   $('typeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') typed(); });
   $('againBtn').addEventListener('click', sayAgain);
@@ -564,6 +586,7 @@
   on('ask', onAsk);
   on('ask-cancel', onAskCancel);
   on('talk-toggle', talk);
+  on('talk-hold', (m) => (m && m.down ? pressTalk() : releaseTalk())); // the home screen's Talk button, held
   on('hush', halt); // Stop from anywhere (Ctrl+Alt+H, a spoken "stop", the tray): silence now, drop the microphone
   on('widget-state', (s) => setExpanded(s && s.expanded, s && s.docked));
   on('settings-changed', applySettings);

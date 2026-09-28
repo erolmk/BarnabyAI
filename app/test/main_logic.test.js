@@ -380,3 +380,12 @@ test('native helper: a missing or damaged helper.exe never throws, fails calls a
     n.stop();
   }
 });
+
+// main.js only loads under Electron, so this reads its source: every window hidden from capture shows with --record.
+test('--record turns off content protection on every window that sets it; normal launches keep it on', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const calls = src.match(/setContentProtection\([^)]*\)/g) || [];
+  assert.ok(calls.length >= 2, 'widget and overlay');
+  for (const c of calls) assert.strictEqual(c, 'setContentProtection(!RECORD)');
+  assert.match(src, /const RECORD = process\.argv\.includes\('--record'\);/);
+});

@@ -1601,10 +1601,32 @@ static class Helper
         return sb.ToString();
     }
 
+    // The taskbar of the screen holding args.hwnd (the main screen without one): Shell_TrayWnd on the main screen,
+    // Shell_SecondaryTrayWnd on the others.
+    static IntPtr TaskbarOf(Args a)
+    {
+        IntPtr mon = Has(a, "hwnd") ? N.MonitorFromWindow(new IntPtr(Long(a, "hwnd", 0)), 2) : IntPtr.Zero;
+        IntPtr bar = IntPtr.Zero;
+        N.EnumWindowsProc proc = delegate(IntPtr h, IntPtr l)
+        {
+            string c = ClassName(h);
+            bool hit = mon == IntPtr.Zero ? c == "Shell_TrayWnd"
+                : (c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd") && N.MonitorFromWindow(h, 2) == mon;
+            if (hit) bar = h;
+            return !hit;
+        };
+        N.EnumWindows(proc, IntPtr.Zero);
+        GC.KeepAlive(proc);
+        if (bar == IntPtr.Zero) throw new Exception("no taskbar on that screen");
+        return bar;
+    }
+
+    // taskbar:true lists the taskbar instead of a window. append:true numbers the items after the last list and keeps
+    // that list, so click_element takes the window's ids and the taskbar's alike.
     static object Elements(Args a)
     {
         Stopwatch sw = Stopwatch.StartNew();
-        IntPtr hwnd = TargetWindow(a);
+        IntPtr hwnd = Bool(a, "taskbar", false) ? TaskbarOf(a) : TargetWindow(a);
         int max = Math.Max(1, Int(a, "max", 250));
         int budget = Math.Max(300, Int(a, "budgetMs", 2500));
         int[] wr = WinRect(hwnd);
@@ -1725,7 +1747,13 @@ static class Helper
             if (it.Secret) o["private"] = true;
             outList.Add(o);
         }
-        lock (ElemLock) { LastElements = ordered; LastElementsWindow = hwnd; }
+        int baseId = 0;
+        lock (ElemLock)
+        {
+            if (Bool(a, "append", false)) { baseId = LastElements.Count; LastElements.AddRange(ordered); }
+            else { LastElements = ordered; LastElementsWindow = hwnd; }
+        }
+        if (baseId > 0) foreach (Args o in outList) o["id"] = (int)o["id"] + baseId;
 
         Args res = new Args();
         res["window"] = WindowInfo(hwnd, null);

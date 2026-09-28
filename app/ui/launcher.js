@@ -141,9 +141,35 @@
     if (go === 'home') return show('home');
     if (go === 'settings') return h.openSettings();
   });
-  $('talk').addEventListener('click', () => h.openTile('talk'));
+  // Hold to talk here too: the widget listens while this is held (a quick tap opens it the old way).
+  let tDown = 0, tHeld = false, tTimer = null;
+  $('talk').addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || !h.talkHold) return;
+    e.preventDefault(); $('talk').setPointerCapture(e.pointerId); tDown = Date.now();
+    tTimer = setTimeout(() => { tTimer = null; tHeld = true; $('talk').classList.add('holding'); h.talkHold(true); }, 250);
+  });
+  const tUp = () => {
+    if (tTimer) { clearTimeout(tTimer); tTimer = null; h.openTile('talk'); return; }
+    if (tHeld) { tHeld = false; $('talk').classList.remove('holding'); h.talkHold(false); }
+  };
+  $('talk').addEventListener('pointerup', tUp);
+  $('talk').addEventListener('pointercancel', tUp);
+  $('talk').addEventListener('click', (e) => { if (e.detail === 0 || !h.talkHold) h.openTile('talk'); });
   $('settings-btn').addEventListener('click', () => h.openSettings());
   $('desktop-btn').addEventListener('click', () => h.minimizeLauncher());
+  // Who does the clicking (the owner, 2026-09-28): "Show me how" (the default, the person clicks where Barnaby points) or
+  // "Do it for me" (Barnaby clicks and types). Barnaby also switches to doing it by itself when someone keeps getting stuck.
+  function renderMode() {
+    const doIt = settings.mode === 'do';
+    $('mode-btn').innerHTML = icon(doIt ? 'talk' : 'lessons') + '<span>' + (doIt ? 'Barnaby does it for me' : 'Barnaby shows me how') + '</span>';
+    $('mode-btn').setAttribute('aria-pressed', String(doIt));
+    $('mode-btn').title = doIt ? 'Press to have Barnaby show you where to click instead' : 'Press to have Barnaby do the clicking for you';
+  }
+  $('mode-btn').addEventListener('click', async () => {
+    const next = settings.mode === 'do' ? 'teach' : 'do';
+    try { settings = (await h.saveSettings({ mode: next })) || { ...settings, mode: next }; } catch (_) { return; }
+    renderMode();
+  });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && view !== 'home') {
@@ -159,12 +185,13 @@
     settings = s || {};
     document.documentElement.style.setProperty('--ui-scale', Math.min(1.6, Math.max(1, +settings.textScale || 1)));
     renderTalk();
+    renderMode();
     tick();
     renderTiles();
     if (view === 'family') renderFamily();
     requestAnimationFrame(updateMore);
   }
-  function talkHint() { return settings.wakeWord ? 'or say “Hello, ' + NAME + '”' : 'or press F9'; }
+  function talkHint() { return 'Hold the button while you talk' + (settings.wakeWord ? ', or say “Hello, ' + NAME + '”' : ''); }
   h.on('settings-changed', applySettings);
   h.on('lesson-saved', () => { if (view === 'lessons') window.LessonsView.refresh(); });
   // The Talk button shows what Barnaby is doing, in the same words as the widget and the pill (ui/status.js):
@@ -176,7 +203,7 @@
     $('talk').classList.toggle('listening', on);
     $('talk').classList.toggle('busy', v.busy);
     $('talk-label').textContent = on ? "I'm listening…" : 'Talk to ' + NAME;
-    $('talk-sub').textContent = on ? 'Press to stop' : v.launcherSub || talkHint();
+    $('talk-sub').textContent = on ? 'Let go when you’re done' : v.launcherSub || talkHint();
   }
   h.on('status', (st) => { status = st || { state: 'idle' }; renderTalk(); });
 

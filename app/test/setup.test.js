@@ -1,4 +1,4 @@
-// Setup: the family helper (picked in the wizard), Auto as the default mode, and the shared speaking speeds.
+// Setup: the family helper (picked in the wizard), "Show me how" as the default mode, and the shared speaking speeds.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -26,21 +26,27 @@ test('family helper: picks during first-run setup apply at once; after setup the
   assert.strictEqual(alerts.safetyPatch(before, { family: { name: 'Ben' } }, now).patch.family.name, 'Anna');
 });
 
-test('config: Auto ("do") is the default, a saved old default moves once, a later "together" choice stays', () => {
+test('config: "Show me how" (teach) is the default, v3 resets mode and autoListen once, a later choice stays', () => {
   const c = new Config(tmpDir());
-  assert.strictEqual(c.get().mode, 'do');
-  assert.strictEqual(c.get().autoListen, true, 'the mic opens by itself after a question unless the family turns it off');
+  assert.strictEqual(c.get().mode, 'teach');
+  assert.strictEqual(c.get().autoListen, false, 'hold to talk; the mic does not open by itself');
+  assert.strictEqual(c.get().keepTranscript, false, 'no transcript unless the family turns it on');
+  assert.strictEqual(c.get().settingsVersion, 3);
   assert.strictEqual(c.get().ttsStyle, 'happy');
   assert.strictEqual(c.get().family.email, '');
   const old = tmpDir();
   fs.writeFileSync(path.join(old, 'settings.json'), JSON.stringify({ mode: 'together', userName: 'Rose' }));
-  const o = new Config(old);
-  assert.strictEqual(o.get().mode, 'do', 'an install saved before Auto moves to Auto');
-  o.save({ mode: 'together' }); // the family picks it again
-  assert.strictEqual(new Config(old).get().mode, 'together', 'a deliberate choice is never moved again');
-  const teach = tmpDir();
-  fs.writeFileSync(path.join(teach, 'settings.json'), JSON.stringify({ mode: 'teach' }));
-  assert.strictEqual(new Config(teach).get().mode, 'teach');
+  assert.strictEqual(new Config(old).get().mode, 'teach', 'an install saved before v2 moves to the new default');
+  const v2 = tmpDir();
+  fs.writeFileSync(path.join(v2, 'settings.json'), JSON.stringify({ mode: 'do', autoListen: true, userName: 'Rose', settingsVersion: 2 }));
+  const o = new Config(v2);
+  assert.deepStrictEqual([o.get().mode, o.get().autoListen, o.get().userName], ['teach', false, 'Rose'], 'v2 -> v3 moves once, keeps the rest');
+  o.save({ mode: 'do', autoListen: true }); // the family picks them again
+  const again = new Config(v2).get();
+  assert.deepStrictEqual([again.mode, again.autoListen, again.settingsVersion], ['do', true, 3], 'a deliberate choice is never moved again');
+  const v3 = tmpDir();
+  fs.writeFileSync(path.join(v3, 'settings.json'), JSON.stringify({ mode: 'together', settingsVersion: 3 }));
+  assert.strictEqual(new Config(v3).get().mode, 'together');
 });
 
 test('speaking speeds: Settings has Slower/Normal/Faster, and the widget speed buttons use the same list', () => {

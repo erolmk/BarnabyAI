@@ -22,7 +22,7 @@ function makeAgent({ script = [], settings = {}, nativeOpts, uiOpts, guardianOpt
     llm: F.fakeLlm(script, { cost }),
     guardian: F.fakeGuardian(guardianOpts),
     support: F.fakeSupport(events),
-    config: F.fakeConfig(settings),
+    config: F.fakeConfig({ mode: 'do', ...settings }), // these tests are about Barnaby acting; the default is now "Show me how"
     memory: new Memory(path.join(dir, 'memory.json')),
     lessons: new Lessons(path.join(dir, 'lessons')),
     done: [],
@@ -160,10 +160,20 @@ test('open AnyDesk is refused before anything opens; guardian refuse/confirm/thr
   assert.ok(!h3.native.calls.some((c) => c.cmd === 'click_element'));
   assert.match(h3.toolResults(1)[0], /REFUSED.*guide_user/);
 
-  // confirm -> person says no -> nothing typed
-  const h4 = makeAgent({
+  // the model gate's doubtful confirm (no rule) no longer asks: typed at once (the owner, 2026-09-28)
+  const h4m = makeAgent({
     script: [assistant(tc('type_text', { text: 'hello', explain: 'I am typing hello.' }))],
     guardianOpts: { gate: () => ({ verdict: 'confirm', reason: 'check first' }) },
+    uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') },
+  });
+  await h4m.agent.runTask('type hello');
+  assert.ok(h4m.nativeCmds().includes('type'));
+  assert.ok(!h4m.ui.asks.some((a) => a.kind === 'confirm'), 'no card for a routine step');
+
+  // a rule's confirm (bigAsk) still asks -> person says no -> nothing typed
+  const h4 = makeAgent({
+    script: [assistant(tc('type_text', { text: 'hello', explain: 'I am typing hello.' }))],
+    guardianOpts: { gate: () => ({ verdict: 'confirm', rule: 'R14b', reason: 'check first' }) },
     uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') },
   });
   await h4.agent.runTask('type hello');
@@ -172,14 +182,47 @@ test('open AnyDesk is refused before anything opens; guardian refuse/confirm/thr
   // the card asks before acting ("Shall I ...?"), never "I am typing ... Shall I go ahead?"
   assert.equal(h4.ui.asks.find((a) => a.kind === 'confirm').question, 'Shall I type: hello?');
 
-  // guardian throws -> treated as confirm (card shown, yes -> typed)
+  // during a scam episode even the model's doubtful confirm asks
+  const h4s = makeAgent({
+    script: [assistant(tc('type_text', { text: 'hello', explain: 'I am typing hello.' }))],
+    guardianOpts: { gate: () => ({ verdict: 'confirm', reason: 'check first' }) },
+    uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') },
+  });
+  h4s.agent.markScam();
+  await h4s.agent.runTask('type hello');
+  assert.ok(!h4s.nativeCmds().includes('type'));
+  assert.ok(h4s.ui.asks.some((a) => a.kind === 'confirm'));
+
+  // the gate thinks it pays/sends/deletes (risky) though no name rule caught it ("Confirm and pay"): the card asks
+  const h4r = makeAgent({
+    script: [assistant(tc('type_text', { text: 'hello', explain: 'I am typing hello.' }))],
+    guardianOpts: { gate: () => ({ verdict: 'confirm', risky: true, reason: 'check first' }) },
+    uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') },
+  });
+  await h4r.agent.runTask('type hello');
+  assert.ok(!h4r.nativeCmds().includes('type'));
+  assert.ok(h4r.ui.asks.some((a) => a.kind === 'confirm'));
+
+  // guardian throws, no hard rule -> nothing checked it, so it fails closed: the card asks, a yes goes ahead
   const h5 = makeAgent({
     script: [assistant(tc('type_text', { text: 'hello', explain: 'I am typing hello.' }))],
     guardianOpts: { gate: () => { throw new Error('jev down'); } },
+    uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'yes' : 'okay') },
   });
   await h5.agent.runTask('type hello');
-  assert.ok(h5.ui.asks.some((a) => a.kind === 'confirm' && a.details.fields.some((f) => /hello/.test(f.value))));
+  assert.ok(h5.ui.asks.some((a) => a.kind === 'confirm'));
   assert.ok(h5.nativeCmds().includes('type'));
+
+  // guardian throws but a hard rule asks (R14b): the rule's question still shows, and a no stops it
+  const h6 = makeAgent({
+    script: [assistant(tc('type_text', { text: 'hello', explain: 'I am typing hello.' }))],
+    guardianOpts: { gate: () => { throw new Error('jev down'); } },
+    uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') },
+  });
+  h6.guardian.hardCheck = () => ({ verdict: 'confirm', rule: 'R14b', reason: 'Delete this?' });
+  await h6.agent.runTask('type hello');
+  assert.equal(h6.ui.asks.find((a) => a.kind === 'confirm').question, 'Delete this?');
+  assert.ok(!h6.nativeCmds().includes('type'));
 });
 
 // ---------- (3) teach mode tools ----------
@@ -202,7 +245,8 @@ test('teach-mode schemas have no click/type_text; support has only its tools', a
   assert.ok(!h.nativeCmds().includes('click_element'));
   assert.match(h.toolResults(1)[0], /not available/);
   assert.deepEqual(h.llm.calls[0].tools.map((t) => t.function.name), names('teach'));
-  assert.match(h.llm.calls[0].messages[0].content, /TEACH\./);
+  assert.match(h.llm.calls[0].messages[0].content, /SHOW ME HOW/);
+  assert.ok(names('teach').includes('zoom') && names('do').includes('zoom'), 'the close-up tool is there to read small text');
 });
 
 test('teach mode: "Please do it for me" on a guide makes the helper click it (but never a Send button)', async () => {
@@ -218,6 +262,66 @@ test('teach mode: "Please do it for me" on a guide makes the helper click it (bu
   assert.ok(h.native.calls.some((c) => c.cmd === 'click_element' && c.args.id === 1));
   assert.ok(!h.native.calls.some((c) => c.cmd === 'click_element' && c.args.id === 2));
   assert.match(h.toolResults(2).at(-1), /REFUSED/);
+});
+
+test('Show me how: missing the ring twice, a timeout, or "I need help" twice switches Barnaby to doing it; a hit resets', async () => {
+  const toolsOf = (h, i) => h.llm.calls[i].tools.map((t) => t.function.name);
+  const switched = (h, i) => h.llm.calls[i].messages.some((m) => typeof m.content === 'string' && m.content.startsWith('MODE CHANGE'));
+  const guide = () => assistant(tc('guide_user', { element_id: 1, instruction: 'Click the red Compose button at the top left.' }));
+  const miss = { waitClick: () => ({ clicked: true, x: 5, y: 5, button: 'left', inRect: false }) };
+
+  const h = makeAgent({ nativeOpts: miss, script: [guide(), guide(), assistant(tc('click', { element_id: 1, explain: 'Clicking Compose.' }))] });
+  await h.agent.runTask('show me how to write an email', { mode: 'teach' });
+  assert.ok(!toolsOf(h, 1).includes('click') && !switched(h, 1), 'one miss is not enough');
+  assert.ok(toolsOf(h, 2).includes('click') && switched(h, 2), 'two misses in a row: Barnaby does it');
+  assert.ok(h.ui.said.some((t) => /do the next steps for you/.test(t)));
+  assert.ok(h.native.calls.some((c) => c.cmd === 'click_element' && c.args.id === 1), 'the click now runs');
+
+  // miss, hit, miss: never two in a row, stays "Show me how"
+  let n = 0;
+  const r = makeAgent({
+    nativeOpts: { waitClick: (a) => (++n === 2 ? { clicked: true, x: a.rect[0] + 5, y: a.rect[1] + 5, inRect: true } : miss.waitClick()) },
+    script: [guide(), guide(), guide()],
+  });
+  await r.agent.runTask('show me how to write an email', { mode: 'teach' });
+  assert.ok(!toolsOf(r, 3).includes('click') && !switched(r, 3));
+
+  // one 3-minute timeout switches
+  const t = makeAgent({ nativeOpts: { waitClick: () => ({ clicked: false }) }, script: [guide()] });
+  await t.agent.runTask('show me how to write an email', { mode: 'teach' });
+  assert.ok(toolsOf(t, 1).includes('click') && switched(t, 1));
+
+  // "I need help" twice switches
+  const help = makeAgent({
+    nativeOpts: { waitClick: () => new Promise(() => {}) },
+    uiOpts: { answer: (a) => (a.choices && a.choices.includes('I need help') ? 'I need help' : 'okay') },
+    script: [guide(), guide()],
+  });
+  await help.agent.runTask('show me how to write an email', { mode: 'teach' });
+  assert.ok(!switched(help, 1) && switched(help, 2));
+  assert.ok(toolsOf(help, 2).includes('type_text'));
+});
+
+test('zoom: a sharp close-up of an item goes to the brain as a picture right after the tool results', async () => {
+  const h = makeAgent({ script: [assistant(tc('zoom', { element_id: 1 })), assistant(tc('zoom', {})), assistant(tc('done', { summary: 'ok' }))] });
+  await h.agent.runTask('read the small print');
+  const shot = h.native.calls.filter((c) => c.cmd === 'screenshot').find((c) => c.args.width);
+  assert.deepEqual([shot.args.x, shot.args.y, shot.args.width, shot.args.height], [0, 352, 510, 339], 'the item plus a margin, physical pixels');
+  assert.equal(shot.args.hwnd, 100, 'secret fields of the OBSERVED window are blacked out');
+  const msgs = h.llm.calls[1].messages;
+  const i = msgs.findIndex((m) => Array.isArray(m.content) && /^Close-up \(zoom\) of "Compose"/.test(m.content[0].text));
+  assert.ok(i > 0 && msgs[i - 1].role === 'tool' && /close-up of "Compose"/.test(msgs[i - 1].content));
+  assert.equal(msgs[i].content[1].image_url.url, 'data:image/png;base64,iVBORw0KGgo=');
+  assert.match(h.toolResults(2).at(-1), /^ERROR: give element_id/);
+  assert.ok(!h.native.calls.some((c) => c.cmd === 'click' || c.cmd === 'click_element'), 'a close-up never touches the screen');
+});
+
+test('zoom: the close-up survives the next look at the screen once (zoom + click in one reply)', async () => {
+  const h = makeAgent({ script: [assistant(tc('zoom', { element_id: 1 }), tc('click', { element_id: 1, explain: 'Clicking Compose.' })), assistant(tc('done', { summary: 'ok' }))] });
+  await h.agent.runTask('read the small print');
+  const msgs = h.llm.calls[1].messages;
+  assert.ok(msgs.some((m) => Array.isArray(m.content) && m.content.some((c) => c.type === 'image_url' && c.image_url.url === 'data:image/png;base64,iVBORw0KGgo=')
+    && /^Close-up/.test(m.content[0].text)), 'the model sees the close-up it asked for');
 });
 
 // ---------- (4) stop ----------
@@ -277,7 +381,7 @@ test('wall clock: waiting on the person does not count, the helper busy time doe
 });
 
 // ---------- (6) support ----------
-test('runSupport: checks first, a fix only after a yes, no screen control', async () => {
+test('runSupport: checks first, a fix runs without asking, no screen control', async () => {
   const script = [
     assistant(tc('run_check', { name: 'overview' })),
     assistant(tc('apply_fix', { name: 'clear_temp', explain: 'I can clear out old temporary files to free up space.' })),
@@ -287,9 +391,9 @@ test('runSupport: checks first, a fix only after a yes, no screen control', asyn
   const h = makeAgent({ script });
   await h.agent.runSupport('my computer is so slow');
   const check = h.idx((e) => e.type === 'check');
-  const card = h.idx((e) => e.type === 'ask' && e.kind === 'confirm');
   const fix = h.idx((e) => e.type === 'fix');
-  assert.ok(check >= 0 && check < card && card < fix);
+  assert.ok(check >= 0 && check < fix);
+  assert.ok(!h.ui.asks.some((a) => a.kind === 'confirm'), 'apply_fix never asks first (the owner, 2026-09-28)');
   assert.equal(h.events[fix].name, 'clear_temp');
   assert.equal(h.native.calls.length, 0, 'support never touches the screen');
   assert.deepEqual(h.llm.calls[0].tools.map((t) => t.function.name).sort(), ['apply_fix', 'ask_user', 'done', 'open', 'run_check', 'run_command', 'say', 'set_plan']);
@@ -297,11 +401,6 @@ test('runSupport: checks first, a fix only after a yes, no screen control', asyn
   assert.match(h.toolResults(1)[0], /Memory 7.1 of 8 GB/);
   assert.ok(h.ui.said.includes('I freed up some space. Restarting once a week keeps it quick.'));
   assert.equal(h.done[0].lessonId, null);
-
-  const h2 = makeAgent({ script, uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') } });
-  await h2.agent.runSupport('my computer is so slow');
-  assert.ok(!h2.events.some((e) => e.type === 'fix'));
-  assert.match(h2.toolResults(2).at(-1), /said no/);
 
   const h3 = makeAgent({ script: [assistant(tc('apply_fix', { name: 'format_disk', explain: 'x' }))] });
   await h3.agent.runSupport('slow');
@@ -346,7 +445,8 @@ test('history keeps reasoning_details and only the newest screenshot', async () 
   const tool1 = msgs[msgs.indexOf(a1) + 1];
   assert.equal(tool1.role, 'tool');
   assert.equal(tool1.tool_call_id, a1.tool_calls[0].id);
-  assert.equal(h.llm.calls[0].maxTokens, 1200);
+  assert.equal(h.llm.calls[0].maxTokens, 6000, 'room for high-effort thinking plus the reply');
+  assert.equal(h.llm.calls[1].maxTokens, 2500);
   assert.equal(h.llm.calls[0].reasoningEffort, 'high', 'the first step of a task thinks hard (auto policy)');
   assert.equal(h.llm.calls[1].reasoningEffort, 'low', 'a routine continuation step is quick');
 });
@@ -639,7 +739,7 @@ test('update_settings: "smaller" lowers textScale by 0.2 and Barnaby only says d
   assert.equal(h3.config.get().speechRate, 0.8, 'speechRate slowed 0.9 -> 0.8');
 });
 
-test('run_command: read-only runs, changing shows a card first, hard refusals never run, events emitted', async () => {
+test('run_command: read-only runs, changing runs without a card, hard refusals never run, events emitted', async () => {
   const commands = [];
   const h = makeAgent({
     script: [
@@ -654,18 +754,13 @@ test('run_command: read-only runs, changing shows a card first, hard refusals ne
   await h.agent.runSupport('my computer is slow');
   const r = h.toolResults(3);
   assert.match(r[0], /PS OUTPUT/, 'read-only command ran with no card');
-  assert.match(r[1], /PS OUTPUT/, 'changing command ran after a yes');
+  assert.match(r[1], /PS OUTPUT/, 'changing command ran without asking');
   assert.match(r[2], /^REFUSED/, 'disabling Defender is hard-refused');
-  // the question is plain words; the exact command stays on the card for the family (lookups never get a card)
-  const card = h.ui.asks.find((a) => a.kind === 'confirm' && a.details.title === 'A change to your computer');
-  assert.ok(card, 'a confirm card for the changing command');
-  assert.ok(!card.question.includes('Restart-Service'), 'no command text in the question');
-  assert.deepEqual(card.details.fields[1], { label: 'For family: the exact command', value: 'Restart-Service Spooler' });
-  assert.equal(card.details.fields[0].label, 'What this does');
-  assert.match(card.details.fields[0].value, /printing service/);
-  // the lookup ran quietly: not spoken, no card, not a lesson step
+  // nothing asks: no card for the lookup or the change (the owner, 2026-09-28); the diary keeps the exact command
+  assert.equal(h.ui.asks.length, 0);
+  assert.equal(commands[1].cmd, 'Restart-Service Spooler');
+  // the lookup ran quietly: not spoken, not a lesson step
   assert.ok(!h.ui.said.includes('Looking at what is busy.'));
-  assert.equal(h.ui.asks.length, 1);
   assert.ok(h.ui.statuses.some((s) => s.label === 'Checking your computer…'));
   assert.equal(commands[0].cmd.startsWith('Get-Process'), true, 'the safety diary keeps the exact command');
   assert.match(r[0], /never the command/);
@@ -673,6 +768,18 @@ test('run_command: read-only runs, changing shows a card first, hard refusals ne
   assert.equal(commands[2].ok, false);
   // never ran the Defender command
   assert.ok(!h.events.some((e) => e.type === 'ps' && /Set-MpPreference/.test(e.script)));
+});
+
+test('run_command: a delete keeps its question (R14b); a no never runs it', async () => {
+  const h = makeAgent({
+    script: [assistant(tc('run_command', { command: 'Clear-RecycleBin -Force', explain: 'Emptying the recycle bin.' })), assistant(tc('done', { summary: 'Done.' }))],
+    uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') },
+  });
+  realGuardian(h);
+  await h.agent.runSupport('free some space');
+  assert.ok(h.ui.asks.some((a) => a.kind === 'confirm'));
+  assert.match(h.toolResults(1)[0], /did not say yes/);
+  assert.ok(!h.events.some((e) => e.type === 'ps'));
 });
 
 test('run_command: at most five changing commands per task', async () => {
@@ -916,6 +1023,61 @@ test("a window on the second screen: that monitor is captured and the brain is t
   await h.agent.runTask("email Anne Marie");
   assert.equal(h.native.calls.find((c) => c.cmd === "screenshot").args.hwnd, F.GMAIL_WINDOW.hwnd);
   assert.match(JSON.stringify(h.llm.calls[0].messages.at(-1).content), /second screen/);
+});
+
+test("the screenshot is only the work area of the window's screen, minus a docked panel that is no AppBar", async () => {
+  const run = async (workArea, panel) => {
+    const h = makeAgent({ nativeOpts: { workArea }, script: [assistant(tc("done", { summary: "ok" }))] });
+    h.ui.dockedPanel = () => panel;
+    await h.agent.runTask("email Anne Marie");
+    assert.deepEqual(h.native.calls.find((c) => c.cmd === "work_area").args, { hwnd: F.GMAIL_WINDOW.hwnd });
+    const s = h.native.calls.find((c) => c.cmd === "screenshot").args;
+    assert.equal(s.hwnd, F.GMAIL_WINDOW.hwnd, "secret fields of the window are still blacked out");
+    return [s.x, s.y, s.width, s.height];
+  };
+  const monitor = [0, 0, 2880, 1620];
+  assert.deepEqual(await run({ rect: [0, 0, 2880, 1548], monitor }, [1920, 0, 960, 1548]), [0, 0, 1920, 1548], "no AppBar: the panel is cut off");
+  assert.deepEqual(await run({ rect: [0, 0, 1920, 1548], monitor }, [1920, 0, 960, 1548]), [0, 0, 1920, 1548], "AppBar: the work area already ends at it");
+  assert.deepEqual(await run({ rect: [0, 0, 2880, 1548], monitor }, null), [0, 0, 2880, 1548], "not docked: the whole work area");
+  assert.deepEqual(await run({ rect: [0, 0, 2880, 1548], monitor }, [4800, 0, 960, 1548]), [0, 0, 2880, 1548], "a panel on the other screen");
+});
+
+test("second screen is judged by the monitor: a work area below a top taskbar is not one", async () => {
+  const top = makeAgent({ nativeOpts: { img: { ...F.IMG, originY: 72 }, workArea: { rect: [0, 72, 2880, 1548], monitor: [0, 0, 2880, 1620] } }, script: [assistant(tc("done", { summary: "ok" }))] });
+  await top.agent.runTask("email Anne Marie");
+  assert.doesNotMatch(JSON.stringify(top.llm.calls[0].messages.at(-1).content), /second screen/);
+  const left = makeAgent({ nativeOpts: { img: { ...F.IMG, originX: -2880 }, workArea: { rect: [-2880, 0, 2880, 1548], monitor: [-2880, 0, 2880, 1620] } }, script: [assistant(tc("done", { summary: "ok" }))] });
+  await left.agent.runTask("email Anne Marie");
+  assert.match(JSON.stringify(left.llm.calls[0].messages.at(-1).content), /second screen/);
+});
+
+test("the taskbar comes as text after the window's items; its ids work for zoom, click and guide_user", async () => {
+  const taskbar = [
+    { id: 7, name: "Start", role: "Button", rect: [1000, 0, 100, 72], enabled: true },
+    { id: 8, name: "71°F", role: "Text", rect: [60, 10, 40, 20], enabled: true },
+    { id: 9, name: "Google Chrome - 1 running window", role: "Button", rect: [1200, 0, 100, 72], enabled: true },
+  ];
+  // A taskbar on the top: the picture (the work area) starts below it.
+  const nativeOpts = { taskbar, taskbarRect: [0, 0, 2880, 72], img: { ...F.IMG, originY: 72 }, workArea: { rect: [0, 72, 2880, 1548], monitor: [0, 0, 2880, 1620] } };
+  const h = makeAgent({ nativeOpts, script: [assistant(tc("zoom", { element_id: 9 })), assistant(tc("click", { element_id: 9, explain: "Opening Chrome." })), assistant(tc("done", { summary: "ok" }))] });
+  await h.agent.runTask("open chrome");
+  const text = h.llm.calls[0].messages.at(-1).content[0].text;
+  assert.ok(text.includes('Taskbar (top of the screen, not in the picture; use the number as element_id):\n[7] Button "Start"\n[9] Button "Google Chrome - 1 running window"'), text);
+  assert.doesNotMatch(text, /71°F/);
+  assert.match(text, /\[1\] Button "Compose" @/, "the window's items keep their ids and positions");
+  const bar = h.native.calls.find((c) => c.cmd === "elements" && c.args.taskbar).args;
+  assert.equal(bar.append, true, "numbered after the window's list, which stays valid");
+  assert.equal(bar.hwnd, F.GMAIL_WINDOW.hwnd, "the taskbar of the window's screen");
+  const zoom = h.native.calls.filter((c) => c.cmd === "screenshot")[1].args;
+  assert.deepEqual([zoom.x, zoom.y, zoom.width, zoom.height], [1080, 0, 340, 312], "clamped to the monitor, not the picture");
+  assert.deepEqual(h.native.calls.find((c) => c.cmd === "click_element").args, { id: 9, double: false });
+  assert.deepEqual(h.ui.highlights[0].rect, taskbar[2].rect, "the ring is on the taskbar button");
+
+  const t = makeAgent({ nativeOpts, script: [assistant(tc("guide_user", { element_id: 9, instruction: "Click the Chrome button at the top." }))] });
+  await t.agent.runTask("open chrome", { mode: "teach" });
+  assert.deepEqual(t.ui.highlights[0].rect, taskbar[2].rect);
+  assert.deepEqual(t.native.calls.find((c) => c.cmd === "wait_click").args.rect, taskbar[2].rect);
+  assert.match(t.toolResults(1)[0], /clicked inside the highlighted area/);
 });
 
 test("Stop while routing drops the request; a guide answered in words ends its mouse hook", async () => {

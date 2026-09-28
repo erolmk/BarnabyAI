@@ -279,11 +279,11 @@
         choices('wakeWord', [[true, 'On'], [false, 'Off']], 'three') },
 
     { id: 'mode', icon: 'talk', title: 'How ' + NAME + ' helps',
-      intro: 'How much should ' + NAME + ' do by himself? They can always say "show me how" or "let\u2019s do it together".',
-      body: () => choices('mode', [['do', 'Auto', 'Recommended. ' + NAME + ' does the whole task and asks only what he must. ' +
-          'Passwords, card numbers and the final Buy or Delete stay theirs, and a message waits for them to send unless they asked him to send it.'],
-        ['together', 'Do it together', NAME + ' does the routine clicks; they do the personal steps.'],
-        ['teach', 'Show me how', 'They do every click, and ' + NAME + ' points.']]) +
+      intro: 'Who does the clicking? This can also be switched on the home screen, and ' + NAME + ' takes over by itself when they keep getting stuck.',
+      body: () => choices('mode', [['teach', 'Show me how', 'Recommended. They do every click and all the typing; ' + NAME + ' rings exactly where to click, waits for them, and explains each step. ' +
+          'Checks on the computer run by themselves in the background.'],
+        ['do', 'Do it for me', NAME + ' does the clicks and typing itself. Passwords, card numbers and the final Send, Buy or Delete stay theirs.'],
+        ['together', 'Do it together', NAME + ' does the routine clicks; they do the personal steps.']]) +
         '<h3>Open beside my programs</h3><p>When ' + esc(NAME) + ' opens, he takes the right third of the screen and the program they are using fills the rest. ' +
         'When he closes, the program fills the whole screen again.</p>' +
         choices('dockPanel', [[true, 'On', 'Recommended'], [false, 'Off', 'He opens as a smaller panel in a corner']], 'three') },
@@ -369,7 +369,7 @@
     return {
       userName: String(d.userName || '').trim(), city: String(d.city || '').trim(),
       textScale: Math.min(1.6, Math.max(1, round1(+d.textScale || 1))),
-      ttsVoice: d.ttsVoice || NATURAL[0][0], voiceName: d.voiceName || '', speechRate: +d.speechRate || 0.9, muted: !!d.muted, mode: d.mode || 'do',
+      ttsVoice: d.ttsVoice || NATURAL[0][0], voiceName: d.voiceName || '', speechRate: +d.speechRate || 0.9, muted: !!d.muted, mode: d.mode || 'teach',
       email: { provider: d.email.provider || '', address: String(d.email.address || '').trim() },
       photos: { provider: d.photos.provider || '' }, video: { provider: d.video.provider || '' },
       // Other keys on a contact (added: 'voice' when Barnaby saved it) are kept, so a save here never erases them.

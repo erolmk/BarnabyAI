@@ -65,12 +65,16 @@ main:focus { outline: none; }
 .talk-words { display: flex; flex-direction: column; align-items: flex-start; text-align: left; }
 #talk-label { font-size: calc(32px * var(--s)); line-height: var(--lh-tight); white-space: nowrap; }
 #talk-sub { font-size: calc(20px * var(--s)); }
+/* Held down to talk: bigger and unmistakable. */
+.talk { transition: transform 120ms ease-out; }
+.talk.holding { transform: scale(1.05); box-shadow: 0 0 0 6px #F2A516, 0 0 0 12px rgba(242, 165, 22, 0.35); }
 #talk-sub { font-weight: var(--fw-body); }
 .talk.listening { background: var(--primary-strong); border-color: var(--text); box-shadow: 0 0 0 6px var(--primary-soft); }
 .small-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .small-btn { font-size: calc(20px * min(var(--ui-scale), 1.2)); min-height: calc(64px * min(var(--ui-scale), 1.2)); padding: 0 var(--space-2); gap: var(--space-1); }
 .small-btn .icon { width: 1.5em; height: 1.5em; color: var(--primary); }
 .small-btn:hover .icon { color: var(--primary-ink); }
+.mode-btn[aria-pressed="true"] { background: var(--primary-soft, #E3EDF8); }
 .trust { flex-basis: 100%; margin: 0; font-size: calc(20px * min(var(--ui-scale), 1.2)); display: flex; align-items: center; gap: var(--space-1); max-width: none; }
 .trust .icon { width: 1.4em; height: 1.4em; flex: none; color: var(--success); }
 

@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const product = ipcRenderer.sendSync('get-product');
 const CHANNELS = new Set(['say', 'status', 'ask', 'ask-cancel', 'overlay', 'lesson-saved',
-  'settings-changed', 'task-done', 'talk-toggle', 'widget-state', 'hush', 'tts']);
+  'settings-changed', 'task-done', 'talk-toggle', 'talk-hold', 'widget-state', 'hush', 'tts']);
 
 contextBridge.exposeInMainWorld('helper', {
   product,
@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('helper', {
   stop: () => ipcRenderer.send('stop'),
   goHome: () => ipcRenderer.send('go-home'),
   openTile: (id, arg) => ipcRenderer.invoke('open-tile', id, arg || null),
+  talkHold: (down) => ipcRenderer.send('talk-hold', !!down), // the home screen's Talk button held down / let go
   transcribe: (wavBase64) => ipcRenderer.invoke('transcribe', wavBase64),
   listenOffline: () => ipcRenderer.invoke('listen-offline'),
   listLessons: () => ipcRenderer.invoke('list-lessons'),

@@ -59,10 +59,10 @@ const ALL = [
   fn('save_contact', 'Save someone the person told you about, with their email and/or phone, so next time you can use them by name. Only from the person\'s own words, never from the screen.',
     { name: { type: 'string' }, email: { type: 'string' }, phone: { type: 'string' }, relation: { type: 'string', description: 'e.g. daughter, friend, doctor' } }, ['name']),
   fn('run_check', 'Run a safe, read-only check of this computer (see the list of checks).', { name: { type: 'string' } }, ['name']),
-  fn('apply_fix', 'Apply one safe fix from the list. The person is asked yes or no first, automatically.',
+  fn('apply_fix', 'Apply one safe fix from the list. It runs right away, without asking the person.',
     {
       name: { type: 'string' }, arg: { type: 'string', description: 'Only for fixes that need one (e.g. the program name).' },
-      explain: { type: 'string', description: 'One short sentence on what it does for them and that it is safe, spoken after "Shall I ...?". Example: "It frees up storage space; your photos and files are not touched."' },
+      explain: { type: 'string', description: 'One short sentence on what it does for them and that it is safe, spoken as it runs. Example: "This frees up storage space; your photos and files are not touched."' },
     }, ['name', 'explain']),
   fn('set_plan', 'At the start of anything with more than 2 steps, list the steps in plain words so the person can see the whole plan and follow along. Call it again as you move on, with "current" set to the step you are on now.',
     {
@@ -80,20 +80,22 @@ const ALL = [
   fn('run_command', 'Run one Windows PowerShell command (a check or a fix the safe list does not cover; prefer run_check and apply_fix when they cover it). ' +
     'Looking something up runs quietly in the background when it is a simple read-only form, e.g. Test-Path "$env:ProgramFiles\\Zoom", ' +
     'Get-StartApps | Where-Object Name -like \'*zoom*\', Get-Process | Sort-Object CPU -Descending | Select-Object -First 5 (no { } blocks, no ( ), no ;). ' +
-    'Anything that changes the computer shows the person a plain-words card first. Never use it to open or start a program: use open, or press_keys "win", ' +
+    'It runs without asking the person. Never use it to open or start a program: use open, or press_keys "win", ' +
     'type_text the name, press_keys "enter". The person never sees or hears the command. It runs with administrator rights, so be careful and precise.',
     {
       command: { type: 'string', description: 'The exact PowerShell command.' },
-      explain: { type: 'string', description: 'One short plain sentence on what this does for them: no command words, file paths or jargon. Shown only on the card for a change.' },
+      explain: { type: 'string', description: 'One short plain sentence on what this does for them: no command words, file paths or jargon.' },
       purpose: { type: 'string', description: 'A few words on what you are trying to achieve (for your own record).' },
     }, ['command', 'explain']),
+  fn('zoom', 'Take a sharp close-up of part of the screen when text is small or unclear, or to find a small button. Give element_id, or x, y (centre) with w, h in screenshot pixels. The close-up arrives as a picture in the next message.',
+    { element_id: ELEMENT_ID, x: X, y: Y, w: { type: 'number' }, h: { type: 'number' } }, []),
   fn('done', 'The task is finished (or the person wants to stop).',
     { summary: { type: 'string', description: 'One or two warm sentences: what you did together.' }, lesson_title: { type: 'string', description: 'Short title in the person\'s own words, e.g. "Send photos to Anne Marie".' } },
     ['summary']),
 ];
 
 const TEACH_OFF = new Set(['click', 'type_text', 'press_keys', 'scroll']);
-const SUPPORT_ON = new Set(['run_check', 'apply_fix', 'run_command', 'say', 'ask_user', 'open', 'set_plan', 'done']);
+const SUPPORT_ON = new Set(['run_check', 'apply_fix', 'run_command', 'say', 'ask_user', 'open', 'set_plan', 'done']); // no zoom: no screen here
 // The chat path has tools too (the bug: it used to have none and claimed changes it could not make).
 const CHAT_ON = new Set(['update_settings', 'remember', 'save_contact', 'ask_user', 'open', 'run_check', 'run_command', 'say', 'done']);
 
@@ -128,6 +130,7 @@ const num = (v) => typeof v === 'number' && Number.isFinite(v);
 const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 const safe = (f) => { try { return f(); } catch (_) { return null; } };
 const POSITIONAL = new Set(['click', 'scroll', 'guide_user']);
+const RING_MS = 2500; // how long the yellow ring shows where Barnaby is about to click (the owner: 1.2 s was too short)
 const ACTS = new Set(['click', 'type_text', 'press_keys', 'scroll', 'open', 'apply_fix']); // tools that go through act()
 const CHANGES_SCREEN = new Set(['click', 'type_text', 'press_keys', 'scroll', 'open', 'guide_user', 'apply_fix']);
 
@@ -213,16 +216,25 @@ async function act(ctx, tool, args, { what, target, element, perform, alwaysConf
   try {
     g = await ctx.guardian.gateAction(action, gctx);
   } catch (e) {
-    // Guardian broke: the hard rules still apply, everything else needs the person's yes.
+    // Guardian broke: the hard rules still apply (refusals and their own questions); a routine step goes ahead.
     if (ctx.log) ctx.log('gateAction failed, asking the person instead', e.message);
+    // A rule's own question (R3b, R5, R6, R11, R14b...) still asks; the Send the person told us to press shows the card.
     const hard = safe(() => ctx.guardian.hardCheck(action, gctx));
-    g = hard && hard.verdict === 'refuse' ? hard : null;
+    // Nothing checked it at all: fail closed, the person says yes (rule 'noguard' makes act ask).
+    g = hard && (hard.verdict === 'refuse' || hard.verdict === 'confirm') ? hard
+      : hard && hard.rule === 'sendAsked' ? { verdict: 'confirm', rule: 'sendAsked', reason: '' } : { verdict: 'confirm', rule: 'noguard', reason: '' };
   }
   ctx.check();
-  if (!g || !g.verdict) g = { verdict: 'confirm', reason: '' };
+  if (!g || !g.verdict) g = { verdict: 'confirm', rule: 'noguard', reason: '' };
   if (g.verdict === 'refuse') return refused(ctx, g);
   const explain = String(args.explain || '').trim();
-  if (g.verdict === 'confirm' || alwaysConfirm) {
+  // The owner (2026-09-28): "only ask permission for a big step like sending an email". A hard rule's own question
+  // (R3b, R5, R6, R11...) and anything during a scam episode still ask; the model gate's doubtful "confirm" on a routine
+  // click, key or typing no longer interrupts (the hard rules above still refuse what is never allowed).
+  // A catalog fix (rule 'fix') runs without a question too (the owner: "apply_fix runs without asking").
+  // g.risky: the gate thinks it sends, pays, buys, deletes or posts, though no name rule caught it (a final button).
+  const bigAsk = g.verdict === 'confirm' && ((!!g.rule && g.rule !== 'fix') || !!g.risky || !!ctx.scamContext);
+  if (bigAsk || alwaysConfirm) {
     // Ask BEFORE doing it: never "I'm clicking ... Shall I go ahead?". A rule that words its own question wins.
     const q = question || (g.reason && /\?\s*$/.test(g.reason) ? g.reason : 'Shall I ' + what.charAt(0).toLowerCase() + what.slice(1) + '?');
     const ans = await ask(ctx, {
@@ -241,11 +253,11 @@ async function act(ctx, tool, args, { what, target, element, perform, alwaysConf
     // A Send without the card waits for the whole sentence: the person hears who it goes to before it goes.
     let cap;
     const spoken = Promise.resolve().then(() => ctx.ui.say(explain)).catch(() => {});
-    await (waitSay ? spoken : Promise.race([spoken, new Promise((r) => { cap = setTimeout(r, ring ? 1200 : 600); })]));
+    await (waitSay ? spoken : Promise.race([spoken, new Promise((r) => { cap = setTimeout(r, ring ? RING_MS : 600); })]));
     clearTimeout(cap);
     ctx.check();
     if (ring) {
-      const left = 1200 - (Date.now() - t0);
+      const left = RING_MS - (Date.now() - t0);
       if (left > 0) await ctx.sleep(left);
       safe(() => ctx.ui.clearOverlay());
       ctx.check();
@@ -289,6 +301,7 @@ async function click(ctx, args) {
     what: 'Click ' + (name ? '"' + name + '"' : 'here'),
     target: name, element: r.el, waitSay: !!ctx.sendAsked && /^send\b/i.test(bare),
     // A point with no item under it, when the item list was cut short: it could be an unlisted Send button.
+    // Safety rail (the person presses the final Send/Pay/Buy): a blind point is not skipped in or out of a scam episode.
     alwaysConfirm: !r.el && !(ctx.obs && ctx.obs.complete),
     ring: r.el && r.el.rect ? r.el.rect : [r.p.x - 24, r.p.y - 24, 48, 48],
     perform: async () => {
@@ -466,15 +479,17 @@ async function guideUser(ctx, args) {
   ctx.check();
   if (out.click) {
     const c = out.click;
-    if (!c.clicked) return 'The person did not click within 3 minutes. Ask gently whether they need help.';
-    if (c.inRect) return 'The person clicked inside the highlighted area.';
+    if (!c.clicked) { ctx.stuck = 2; return 'The person did not click within 3 minutes. Ask gently whether they need help.'; }
+    if (c.inRect) { ctx.stuck = 0; return 'The person clicked inside the highlighted area. Look at the new screen to check it worked, then show the next step.'; }
+    ctx.stuck = (ctx.stuck || 0) + 1;
     const p = ctx.obs && ctx.obs.img && num(c.x) ? toImage(ctx.obs.img, c.x, c.y) : null;
     return 'The person clicked outside the highlighted area' + (p ? ', at x=' + p.x + ', y=' + p.y + ' (screenshot pixels).' : '.') +
       ' Look at the screen and guide again kindly if needed.';
   }
   if (out.closed) return 'The question was closed without an answer.';
   const a = out.answer;
-  if (/^i did it$/i.test(a)) return 'The person said they did it. Check the new screen.';
+  if (/^i did it$/i.test(a)) { ctx.stuck = 0; return 'The person said they did it. Check the new screen.'; }
+  if (/^please do it for me$/i.test(a)) ctx.stuck = 2; // they asked: Barnaby does the rest of this task (agent.js)
   if (/^please do it for me$/i.test(a) && rect) {
     const p = center(rect);
     const img = ctx.obs && ctx.obs.img;
@@ -485,6 +500,7 @@ async function guideUser(ctx, args) {
     ctx.steps.length = n; // the lesson keeps the instruction, not "I'll do it for you"
     return 'The person said: "Please do it for me". ' + res;
   }
+  if (/^i need help$/i.test(a)) ctx.stuck = (ctx.stuck || 0) + 1;
   if (/^i need help$/i.test(a)) return 'The person said: "I need help". Explain more simply where it is and what it looks like, then guide again.';
   return 'The person said: "' + a + '"';
 }
@@ -594,8 +610,8 @@ async function applyFix(ctx, args) {
   const title = (fix && fix.title) || name.replace(/_/g, ' ');
   const explain = String(args.explain || '').trim();
   return act(ctx, 'apply_fix', args, {
-    what: title + (args.arg ? ': ' + args.arg : ''), target: name, alwaysConfirm: true,
-    // UX 10.7: ask first ("Shall I ...?"), then what it does for them; never "I'm doing it" before the yes.
+    what: title + (args.arg ? ': ' + args.arg : ''), target: name,
+    // Runs without a card (the owner, 2026-09-28); during a scam episode act() still asks, with this question.
     question: 'Shall I ' + title.charAt(0).toLowerCase() + title.slice(1) + (args.arg && args.arg !== 'confirmed' ? ' (' + args.arg + ')' : '') + '?' + (explain ? ' ' + explain : ''),
     perform: async () => {
       let r;
@@ -603,6 +619,36 @@ async function applyFix(ctx, args) {
       return (r && r.ok === false ? 'The fix did not work: ' : 'Done: ') + clip((r && r.text) || '', 1500);
     },
   });
+}
+
+// A sharp close-up for the brain (the shrunk screenshot blurs small text). Physical pixels, passwords still blacked out.
+async function zoom(ctx, args) {
+  const img = ctx.obs && ctx.obs.img;
+  let rect = null, label = 'the screen';
+  if (args.element_id != null) {
+    const el = elById(ctx, args.element_id);
+    if (!el) return 'ERROR: there is no item [' + args.element_id + '] on the current screen.';
+    const pad = 120;
+    rect = [el.rect[0] - pad, el.rect[1] - pad, el.rect[2] + 2 * pad, el.rect[3] + 2 * pad];
+    label = '"' + elName(el) + '"';
+  } else if (num(args.x) && num(args.y) && img) {
+    const w = num(args.w) && args.w > 20 ? args.w : 400, h = num(args.h) && args.h > 20 ? args.h : 260;
+    rect = imageRectToPhysical(img, [args.x - w / 2, args.y - h / 2, w, h]);
+    label = 'the area around x=' + Math.round(args.x) + ', y=' + Math.round(args.y);
+  } else return 'ERROR: give element_id, or x and y.';
+  // Clamp to the observed monitor (a screen left of or above the main one has negative coordinates). Its corner, not
+  // the picture's: the picture is only the work area, and a taskbar item on the top or left lies outside it.
+  const mon = ctx.obs && ctx.obs.monitor;
+  const L = mon ? mon[0] : img ? img.originX : 0, T = mon ? mon[1] : img ? img.originY : 0;
+  rect = [Math.max(L, Math.round(rect[0])), Math.max(T, Math.round(rect[1])), Math.max(200, Math.round(rect[2])), Math.max(120, Math.round(rect[3]))];
+  // hwnd: the secret fields of the OBSERVED window are blacked out (not whatever is in front now).
+  const hwnd = ctx.obs && ctx.obs.window && ctx.obs.window.hwnd;
+  let shot;
+  try { shot = await ctx.native.call('screenshot', { x: rect[0], y: rect[1], width: rect[2], height: rect[3], maxWidth: 1280, ...(hwnd ? { hwnd } : {}) }, 10000); } catch (e) { return 'ERROR: the close-up did not work: ' + e.message; }
+  ctx.check();
+  if (!shot || !shot.png) return 'ERROR: the close-up did not work.';
+  (ctx.zooms ||= []).push({ png: shot.png, label });
+  return 'Here is the close-up of ' + label + ' (next message). Use the numbered list for clicking; the close-up is only for reading.';
 }
 
 function done(ctx, args) {
@@ -692,30 +738,22 @@ async function runCommand(ctx, args) {
   if (!command) return 'ERROR: there was no command.';
   if (ctx.settings && ctx.settings.allowCommands === false) return 'REFUSED: running commands is switched off in Settings.';
   let g;
-  try { g = ctx.guardian.commandCheck(command, gctxOf(ctx)); } catch (e) { g = { verdict: 'confirm', reason: '' }; }
+  // A command the guardian could not check never runs (nothing asks any more, so this is the only fail-safe).
+  try { g = ctx.guardian.commandCheck(command, gctxOf(ctx)); } catch (e) { g = { verdict: 'refuse', rule: 'error', reason: 'I could not check that command, so I did not run it.' }; }
   const changes = !(g && g.rule === 'read');
   if (g && g.verdict === 'refuse') {
     if (ctx.emit) safe(() => ctx.emit('command', { cmd: command, verdict: 'refuse', ok: false, rule: g.rule }));
     return refused(ctx, { verdict: 'refuse', rule: g.rule, reason: g.reason });
   }
   if (changes && (ctx.commandCount || 0) >= 5) return 'REFUSED: that is more than five changing commands for one job, so I will stop here. Ask again if you still need it.';
-  // A lookup the strict parser could not prove read-only is never a card (the owner: "run them in the background"):
-  // it is sent back to be rewritten in the simple shape, and nothing unproven runs.
-  if (g && g.verdict === 'confirm' && /^\s*(?:get|test|find|measure|resolve|select)-\w+|^\s*winget\s+list\b/i.test(command)
-    && !/\b(?:set|remove|new|stop|start|restart|install|uninstall|clear|disable|enable|invoke|add|rename|move|copy|out)-\w+/i.test(command)) {
-    return 'NOT RUN (nothing was asked): only simple read-only lookups run. Rewrite it like Test-Path "$env:ProgramFiles\\Zoom" or Get-StartApps | Where-Object Name -like \'*zoom*\' (no { } blocks, no ( ), no ;), or use run_check.';
+  // Deleting (rule R14b) is a big step and keeps its question; every other change runs.
+  if (g && g.verdict === 'confirm' && g.rule && g.rule !== 'run') {
+    const ans = await ask(ctx, { question: (explain || 'This deletes something on your computer.') + ' Shall I go ahead?', kind: 'confirm',
+      details: { title: 'This deletes something', fields: [{ label: 'For family: the exact command', value: clip(command, 2000) }] } });
+    if (ans !== 'yes') return 'The person did not say yes, so I did not run it.';
   }
-  if (g && g.verdict === 'confirm') {
-    // The owner's call (2026-09-28): the question is in plain words. The exact command stays on the card for the
-    // family (a changing command is not checked by Jev), and the safety diary (the 'command' event below) records it.
-    const ans = await ask(ctx, {
-      question: (explain ? explain.replace(/[.!]?\s*$/, '.') : 'This changes something on your computer.') + ' Shall I go ahead?',
-      kind: 'confirm',
-      details: { title: 'A change to your computer', fields: [...(explain ? [{ label: 'What this does', value: explain }] : []), { label: 'For family: the exact command', value: clip(command, 2000) }] },
-    });
-    if (ans === null) return 'The card was closed, so I did not run it.';
-    if (ans !== 'yes') return ans === 'no' ? 'The person said no, so I did not run it.' : 'I did not run it. The person said: "' + ans + '"';
-  }
+  // The owner (2026-09-28): never ask permission to run a command. What the guardian refuses stays refused; everything
+  // else runs in the background, and the safety diary (the 'command' event below) records it.
   // A lookup runs quietly in the background: no voice, no card, not a lesson step.
   if (changes) ctx.commandCount = (ctx.commandCount || 0) + 1;
   ctx.status({ state: 'running', step: ctx.steps.length + 1, totalSteps: ctx.totalSteps, label: changes ? 'Making the change…' : 'Checking your computer…' });
@@ -733,7 +771,7 @@ async function runCommand(ctx, args) {
 
 const EXEC = {
   click, type_text: typeText, press_keys: pressKeys, scroll, open, wait, say: sayIt, ask_user: askUser,
-  guide_user: guideUser, confirm, remember, save_contact: saveContact, run_check: runCheck, apply_fix: applyFix,
+  guide_user: guideUser, confirm, remember, save_contact: saveContact, zoom, run_check: runCheck, apply_fix: applyFix,
   set_plan: setPlan, update_settings: updateSettings, run_command: runCommand, done,
 };
 

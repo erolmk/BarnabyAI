@@ -121,6 +121,9 @@ const CMD_REFUSE = [
   ['logs', /wevtutil\s+(?:cl|clear-log)|clear-eventlog|remove-eventlog|limit-eventlog/],
   ['delete', /(?:remove-item|\brd\b|\brmdir\b|\bdel\b|\berase\b|\brm\b|remove-itemproperty|clear-content)\b[\s\S]*(?:c:\\windows|c:\\program files|%windir%|%programfiles%|%systemroot%|\\windows\\|\\program files|c:\\users\b|c:\\users\\?\s|%userprofile%|%appdata%|\$env:userprofile|\$env:appdata|\b[d-z]:\\|-recurse[\s\S]*c:\\)/],
   ['registry', /(?:reg(?:\.exe)?\s+(?:add|delete|import|load)|new-item|set-item(?:property)?|remove-item(?:property)?|new-itemproperty|reg-)[\s\S]*(?:hklm|hkey_local_machine)[\s\S]*(?:\\system\b|\\software\\policies|\\currentversion\\run|\\winlogon|\\image file execution)|(?:currentversion\\run|winlogon\\shell|image file execution)/],
+  // Installs and remote scripts: the prompts say never install programs, and a changing command with a web address in it
+  // is never a local fix (a renamed remote-access .msi, mshta, certutil downloads).
+  ['install', /\b(?:msiexec|mshta|regsvr32|rundll32|certutil|bitsadmin|start-bitstransfer|install-package|install-module|install-script|add-appxpackage|add-appprovisionedpackage|(?:winget|choco|chocolatey|scoop)\s+(?:install|upgrade|import))\b|https?:\/\//],
   ['ourapp', /(?:barnaby|seniorhelper|senior-helper|safety-diary|safety\.json|settings\.json|userdata|user data|openrouter_api_key)\b/],
 ];
 
@@ -500,6 +503,8 @@ class Guardian {
     const readOnly = isReadOnlyCommand(raw);
     if (context.scamContext) return readOnly ? auto : refuse('scam', MSG.commandScam);
     if (readOnly) return auto;
+    // Deleting is a big step (the owner's policy): it keeps its question even though other commands no longer ask.
+    if (/\b(?:remove-item|rd|rmdir|del|erase|rm|clear-recyclebin|clear-content|uninstall-\w+|remove-appxpackage|winget\s+uninstall)\b/.test(t)) return confirm('R14b');
     return confirm('run');
   }
 
@@ -530,23 +535,25 @@ class Guardian {
       window: win.title ? String(win.title).slice(0, 150) + (win.process ? ' (' + win.process + ')' : '') : '',
       scam_context: !!context.scamContext,
     };
-    let verdict, confidence, reason, jevChoice = '';
+    let verdict, confidence, reason, jevChoice = '', risky = false;
     try {
       const r = await this.jev.ask(state, {
         verdict: { type: 'choice', instructions: GATE_INSTRUCTIONS, criteria: GATE_CRITERIA },
-        risky: { type: 'noul', instructions: 'Does this action send, buy, delete, post, or change settings?' },
+        risky: { type: 'noul', instructions: 'Does this action send, pay, buy, delete or post something?' },
       }, this.jevOpts());
       const v = r.answers.verdict;
       jevChoice = v.choice;
       verdict = RANK[v.choice] === undefined ? 'confirm' : v.choice;
       confidence = v.confidence;
       if (verdict === 'refuse' && confidence < 0.6) verdict = 'confirm';
-      if (verdict === 'auto' && (confidence < 0.6 || r.answers.risky.noul >= RISKY_P)) verdict = 'confirm';
+      risky = r.answers.risky.noul >= RISKY_P;
+      if (verdict === 'auto' && (confidence < 0.6 || risky)) verdict = 'confirm';
       reason = verdict === 'refuse' ? MSG.jevRefuse : verdict === 'confirm' ? MSG.jevConfirm : '';
     } catch (e) {
       this.log('gateAction: Jev failed, rules-only default', e.message);
       const blob = norm([JSON.stringify(proposed), a.explain, el.name].join(' '));
       verdict = RISKY_WORDS.test(blob) ? 'confirm' : 'auto';
+      risky = /\b(?:send|submit|pay|buy|purchase|order|delete|remove|transfer|post|publish|share|confirm)\b/.test(blob);
       confidence = 0;
       reason = verdict === 'confirm' ? MSG.jevConfirm : '';
     }
@@ -554,10 +561,12 @@ class Guardian {
     // Jev down, or a doubtful refuse, falls back to the card.
     if (hard && hard.rule === 'sendAsked') {
       if (verdict === 'refuse') return { verdict, reason, confidence };
-      return confidence === 0 || jevChoice === 'refuse' ? { verdict: 'confirm', reason: MSG.jevConfirm, confidence } : { verdict: 'auto', reason: '', confidence };
+      // rule: the card must still show now that a rule-less model "confirm" no longer asks (tools.act bigAsk).
+      return confidence === 0 || jevChoice === 'refuse' ? { verdict: 'confirm', rule: 'sendAsked', reason: MSG.jevConfirm, confidence } : { verdict: 'auto', reason: '', confidence };
     }
     if (verdict === 'auto' && context.scamContext) { verdict = 'confirm'; reason = MSG.jevConfirm; }
-    const out = { verdict, reason, confidence };
+    // risky: a final button no name rule caught ('Confirm and pay', 'Yes, delete'): tools.act still asks for it.
+    const out = { verdict, reason, confidence, ...(verdict === 'confirm' && risky ? { risky: true } : {}) };
     return finish(hard && RANK[hard.verdict] >= RANK[verdict] ? { ...hard, confidence } : out, confidence, context);
   }
 

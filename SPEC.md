@@ -86,7 +86,7 @@ its own thread; serialize writes to stdout with a lock. Unknown cmd → ok:false
 | ping | – | `{pong:true, version:"1"}` |
 | screen_info | – | `{width,height,scale, monitors:[{x,y,width,height,primary,scale}]}` (primary monitor = coordinates origin reference; `scale` = DPI/96) |
 | screenshot | `{maxWidth:1280, x?,y?,width?,height?}` | `{png:"<base64>", width, height, factor, originX, originY}` — image of primary monitor (or region), downscaled to maxWidth; physical = origin + imagePx * factor |
-| elements | `{scope:"foreground"\|"window", hwnd?, max:250}` | `{window:{hwnd,title,process,rect:[x,y,w,h]}, elements:[{id,name,role,rect:[x,y,w,h],value?,enabled,focused?}]}` — visible, on-screen, interactive or text-bearing UIA elements of that window in reading order; ids are small ints valid until the next `elements` call. Hard time budget ~2.5 s (return what you have + `truncated:true`). For Chromium/Edge windows walk into the web content (set `UIA_*` cache request / use `TreeWalker.ControlViewWalker`). |
+| elements | `{scope:"foreground"\|"window", hwnd?, max:250}` | `{window:{hwnd,title,process,rect:[x,y,w,h]}, elements:[{id,name,role,rect:[x,y,w,h],value?,enabled,focused?}]}` — visible, on-screen, interactive or text-bearing UIA elements of that window in reading order; ids are small ints valid until the next `elements` call. `taskbar:true` lists the taskbar of hwnd's screen (Shell_TrayWnd / Shell_SecondaryTrayWnd) instead; `append:true` numbers the items after the last list and keeps it, so `click_element` takes both. Hard time budget ~2.5 s (return what you have + `truncated:true`). For Chromium/Edge windows walk into the web content (set `UIA_*` cache request / use `TreeWalker.ControlViewWalker`). |
 | click | `{x,y,button:"left"\|"right", double:false}` | `{}` (SendInput, moves cursor there) |
 | click_element | `{id, double:false}` | `{x,y,method:"invoke"\|"click"}` — Invoke/Select/Toggle pattern if safe else click center |
 | type | `{text}` | `{}` (SendInput KEYEVENTF_UNICODE, handles \n as Enter) |
@@ -140,19 +140,31 @@ Main → renderer events (channel: payload):
 - `lesson-saved`: `{id,title}`; `settings-changed`: settings; `task-done`: `{summary}`
 
 ## Agent loop (src/agent.js)
-- `runTask(utterance, {mode})`, modes: `do` (default, shown as "Auto": helper does everything except
-  irreversible final actions, which need the person), `together` (the helper does the clicks and typing; the
-  person does only passwords/codes, personal choices and the final button), `teach` (person does every click;
-  helper highlights). A missing or invalid mode falls back to `do`; `update_settings` accepts "auto".
+- `runTask(utterance, {mode})`, modes: `teach` (default since 2026-09-28, shown as "Show me how": the person
+  does every click and typing; the helper rings the exact button, waits for a real click inside the ring, checks
+  the new screen, then shows the next step), `do` (shown as "Do it for me", switchable on the home screen: helper
+  does everything except irreversible final actions, which need the person), `together` (the helper does the
+  clicks and typing; the person does only passwords/codes, personal choices and the final button).
+  `update_settings` accepts "auto". The helper switches itself to `do` for the rest of a task when the person
+  misses the ring twice in a row, one 3-minute timeout, "I need help" twice, or "Please do it for me" (`ctx.stuck >= 2`).
+  settingsVersion 3 resets `mode` and `autoListen` to the new defaults once.
+- Asking policy (owner, 2026-09-28): never ask permission to run commands, press keys, click, type, open things
+  or apply fixes. The only questions left: a hard rule's own confirm (`g.rule`: R3b/R5/R6/R11/R14b, sendAsked,
+  a delete command), a gate "confirm" the model marks `risky` (sends/pays/buys/deletes/posts, e.g. "Confirm and
+  pay"), a click on an unlisted point when the item list was cut short, anything during a scam episode, and any
+  step when the guardian itself failed (`noguard`: fail closed). A plain model doubt no longer asks.
 - The system prompt is static per mode (byte-identical between tasks). The person's facts, memory, recipes,
   lesson and the time go in the first user message, so the provider can reuse its cache. The prompt tells the
   helper to act first, take the shortest path, ask only what it cannot find out, and never repeat the task back.
-- Thinking policy: step 1 high; after that, once any step goes high, the rest of the task stays high and Jev is
-  not asked again (research/08 #1). Each brain call logs `[llm] mode effort N in, N cached, N out, provider`
+- Thinking policy: high only for step 1, the step right after a surprise, support diagnosis and chat; otherwise
+  low; no sticky high and no Jev effort call; maxTokens 6000 high / 2500 low. Each brain call logs `[llm] mode effort N in, N cached, N out, provider`
   (numbers only). handle() sets status `{state:'thinking', label:'One moment…'}` as soon as the person is heard.
 - Each step: observe = foreground window + `elements` (compact text list `[id] role "name" (x,y,w,h)`)
   + screenshot (maxWidth 1280, jpeg/png as data URL) + list of open windows + memory facts + task
-  transcript so far. Send to brain model with tools. Execute returned tool calls in order.
+  transcript so far. The screenshot is only the `work_area` of the window's screen (no taskbar, no docked AppBar;
+  a docked panel without an AppBar, `ui.dockedPanel()`, is cut off too), so 1080p is not shrunk. The taskbar's
+  buttons follow as a text section (`Taskbar (bottom of the screen, not in the picture)`, ids after the window's,
+  Text items dropped). "Second screen" = the monitor's corner is not 0,0 (never the picture's origin). Send to brain model with tools. Execute returned tool calls in order.
   Max 40 steps, per-task cost cap (settings, default $0.25), timeout 15 min, Stop button aborts.
 - Every action tool carries `explain` (one short sentence, about 15 words: what and where, why only when not
   obvious; never repeats the task). The caption and ring show first, and the action waits at most 1.2 s (0.6 s
@@ -165,11 +177,15 @@ Main → renderer events (channel: payload):
   buys, deletes, posts, or changes settings), `remember{fact}`, `save_contact{name, email?, phone?, relation?}`
   (adds a contact the person dictated, marked `added:'voice'`; never overwrites a Settings contact; refused in a
   scam episode; not in support mode), `run_command{command, explain}` (read-only lookups run silently with no
-  card and no voice, status "Checking your computer…"; a change shows a plain-words question, with the exact command on the card under
-  "For family: the exact command"; a Get-/Test-/winget list lookup the parser cannot prove read-only is not run
-  and returns "NOT RUN" so the brain rewrites it, never a card; the safety diary keeps the command), `run_check{name}`, `apply_fix{name, arg?, explain}`,
+  card and no voice, status "Checking your computer…"; a change runs without a card unless the guardian refuses
+  it (installs, msiexec/mshta/certutil/winget install and any command with a web address are refused; a crashed
+  check refuses); a delete (Remove-Item, del, Clear-RecycleBin...) keeps one question with the exact command under
+  "For family: the exact command"; the safety diary keeps every command), `run_check{name}`, `apply_fix{name, arg?,
+  explain}` (runs without asking; asks during a scam episode), `zoom{element_id|x,y,w,h}` (a sharp close-up of the
+  observed window's area, secret fields blacked out, added as a picture right after the tool results),
   `done{summary, lesson_title}`.
-- Guardian gate before each action (see below); `refuse` → speak why + stop; `confirm` → confirm card.
+- Guardian gate before each action (see below); `refuse` → speak why + stop; `confirm` → confirm card only as
+  listed under "Asking policy" above, otherwise the step goes ahead.
 - The person presses Send/Buy/Submit themselves (the agent uses `guide_user`). The one exception: an email's own
   Send button in the person's own mail program (Gmail/Outlook/Yahoo/AOL title or the Outlook process, and the
   configured provider; not any page titled "mail"), when the person's original request said to send it ("...and
@@ -284,6 +300,8 @@ Native `windows`/`foreground` results include `pid` so we can skip our own windo
 - Docked panel (settings.dockPanel, default on): the open panel is an AppBar on the right third of the screen
   (full work-area height); the person's program is maximized into the left two thirds; closing undocks and the
   pill returns to its corner. Any saved textScale change (Settings or Barnaby's `update_settings`) re-lays out the panel.
+- `--record` (Open Barnaby (recording).vbs): widget and overlay drop setContentProtection so OBS can film them; normal
+  launches keep it. Barnaby's own screenshots still leave the docked panel out (work-area crop).
 - Agent event `'command'` `{cmd, verdict:"auto"|"confirm"|"refuse", ok, rule?}` — main writes a redacted line to the
   safety diary. Settings: brainModel `deepseek/deepseek-v4.1-flash`, providers (pinned ZDR list), thinking
   auto|always|never, dockPanel, allowCommands. The app runs as administrator (requireAdministrator).
@@ -323,7 +341,13 @@ Native `windows`/`foreground` results include `pid` so we can skip our own windo
 - `say` payload gains `again` (Say it again: no second caption, 0.05 slower, nothing to the launcher).
   `helper.sayLine(text, {again})` -> ipc `say-line` -> `ui.say(text, {wait:false})`: the widget's own spoken
   lines and Say it again use the natural voice (without the bridge the widget falls back to the Windows voice).
-- Auto-listen (`settings.autoListen`, default true): once a `choice`/`text` question (never confirm/done) has been
+- Hold to talk (widget and home-screen Talk): hold = listen until let go; a quick tap = listen until a longer pause
+  (END_MS 1500/2500/2500). A new utterance of the person's own (spoken/typed, not a tile or an answer) within 25 s,
+  while the last request is still running, no question open and no scam warning/episode on, is joined to it and the
+  task restarts.
+- Private transcript (`settings.keepTranscript`, default false): userData/transcripts/YYYY-MM-DD.jsonl, every line
+  redacted by the guardian (tool args and results too), pruned after 14 days (at start and every 10 minutes).
+- Auto-listen (`settings.autoListen`, default false since 2026-09-28): once a `choice`/`text` question (never confirm/done) has been
   spoken to the end (`ask.sayId`), the mic opens by itself. Never for main's own questions (`ask.noAutoMic`: close
   the scam page, quit Barnaby), so a scam page's voice or a TV cannot answer them or start a request. Never when muted, in the demo, already listening or
   talking, or when the line was hushed. An auto mic that hears nothing closes quietly after 8 s; a button click

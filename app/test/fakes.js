@@ -29,7 +29,9 @@ function fakeNative(events, opts = {}) {
       switch (cmd) {
         case 'windows': return { windows: [{ ...GMAIL_WINDOW, foreground: true }, { hwnd: 200, title: 'Photos - iCloud', process: 'msedge', pid: 5000, rect: [0, 0, 100, 100] }, { hwnd: 300, title: 'Barnaby', process: 'electron', pid: 1 }] };
         case 'foreground': return { ...GMAIL_WINDOW };
-        case 'elements': return { window: { hwnd: 100, title: GMAIL_WINDOW.title, process: 'chrome', rect: GMAIL_WINDOW.rect }, elements: opts.elements || GMAIL_ELEMENTS };
+        case 'elements': return args.taskbar ? { window: { hwnd: 900, title: '', process: 'explorer', rect: opts.taskbarRect || [0, 1620, 2880, 72] }, elements: opts.taskbar || [] }
+          : { window: { hwnd: 100, title: GMAIL_WINDOW.title, process: 'chrome', rect: GMAIL_WINDOW.rect }, elements: opts.elements || GMAIL_ELEMENTS };
+        case 'work_area': return opts.workArea || {};
         case 'screenshot': return { png: 'iVBORw0KGgo=', ...img };
         case 'click_element': return { x: 0, y: 0, method: 'invoke' };
         case 'wait_click': return opts.waitClick ? opts.waitClick(args) : { clicked: true, x: args.rect[0] + 5, y: args.rect[1] + 5, button: 'left', inRect: true };

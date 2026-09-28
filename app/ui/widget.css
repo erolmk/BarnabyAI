@@ -163,6 +163,9 @@ body.compact .bottom button, body.compact .small-btn { font-size: min(var(--fs-b
 
 button.talk { width: 100%; min-height: 88px; font-size: var(--fs-h3); gap: var(--space-2); }
 button.talk.listening { box-shadow: 0 0 0 5px var(--primary-soft), 0 0 0 7px var(--primary); }
+/* Held down: bigger and unmistakable (hold to talk). */
+button.talk { transition: transform 120ms ease-out, min-height 120ms ease-out; }
+button.talk.holding { transform: scale(1.06); min-height: 132px; font-size: calc(var(--fs-h3) * 1.15); box-shadow: 0 0 0 6px #F2A516, 0 0 0 12px rgba(242, 165, 22, 0.35); }
 
 /* speaking speed: Slower / Normal / Faster, the chosen one filled */
 .speed-row { display: grid; grid-template-columns: auto 1fr 1fr 1fr; gap: var(--space-1); align-items: center; }

@@ -51,9 +51,9 @@ It fixes "my computer is slow" with read-only diagnostics, and guards against sc
 | Piece | Where | What |
 |---|---|---|
 | Launcher | `ui/launcher.*` | 9 big tiles, clock and weather, "Talk to Barnaby" (F9), lessons, family |
-| Widget | `ui/widget.*`, `ui/voice.js` | "Help" pill, captions, one question at a time, confirm cards, push-to-talk |
+| Widget | `ui/widget.*`, `ui/voice.js` | "Help" pill, captions, one question at a time, confirm cards, hold-to-talk |
 | Overlay | `ui/overlay.*` | yellow and black teaching ring with a label, and the calm full-screen scam card |
-| Brain | `src/agent.js`, `src/tools.js` | looks (screenshot + UI Automation list), thinks (OpenRouter `deepseek/deepseek-v4.1-flash`), acts in Auto mode by default, asks only what it cannot find out, and explains each step in a short line |
+| Brain | `src/agent.js`, `src/tools.js` | looks (screenshot + UI Automation list), thinks (OpenRouter `deepseek/deepseek-v4.1-flash`), defaults to "Show me how" (rings each button for the person to click; "Do it for me" is one tap away, and it switches itself when the person gets stuck), never asks permission for routine steps (only big final steps, deletes and anything in a scam episode), asks only what it cannot find out, and explains each step in a short line |
 | Guardian | `src/guardian.js`, `src/router.js` | **TypeSafe Jev** (`~typesafe/jev-latest`) routes intents, gates each action (auto / confirm / refuse) and detects scam screens, on top of hard rules that no model can override |
 | Scam Shield | `main.js` | watches the window in front; runs Jev only when the keyword prefilter hits |
 | Support | `src/support.js` | 9 read-only PowerShell checks and 8 whitelisted fixes, each only after a yes |

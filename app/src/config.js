@@ -20,10 +20,11 @@ const DEFAULTS = {
   voiceName: '',
   speechRate: 0.9,
   muted: false,
-  autoListen: true, // the mic opens by itself after a choice/text question is said (never confirm, never muted)
+  autoListen: false, // off since v3: hold-to-talk is the way to talk (the owner, 2026-09-28); on = the mic opens after a question
   ttsStyle: 'happy', // Azure speaking style on Ethan/Harper; 'none' = plain
   textScale: 1.0,
-  mode: 'do', // do (shown as "Auto", the default) | together | teach
+  mode: 'teach', // teach ("Show me how", the default: the person clicks and types, Barnaby points) | do ("Do it for me") | together
+  keepTranscript: false, // a private copy of each conversation in userData/transcripts (troubleshooting; local only)
   email: { provider: '', address: '' }, // gmail | outlook | aol | yahoo | outlook-app
   photos: { provider: '' }, // icloud | google | windows
   video: { provider: '' }, // zoom | whatsapp | facebook | teams
@@ -40,7 +41,7 @@ const DEFAULTS = {
   taskCostCapUsd: 0.25,
   maxSteps: 40,
   setupDone: false,
-  settingsVersion: 2, // one-time moves below run only for files saved before this number
+  settingsVersion: 3, // one-time moves below run only for files saved before this number
 };
 
 // Old default -> dropped on load, so the current default applies.
@@ -82,6 +83,8 @@ class Config extends EventEmitter {
     for (const [k, was] of Object.entries(RETIRED)) if (saved[k] === was) delete saved[k];
     // v2: Auto is the default. Only once (a file without the number is older), so a family's later "together" stays.
     if (!saved.settingsVersion && saved.mode === 'together') delete saved.mode;
+    // v3 (the owner, 2026-09-28): Barnaby shows the person what to click ("Show me how") and they hold Talk to speak.
+    if ((saved.settingsVersion || 0) < 3) { delete saved.mode; delete saved.autoListen; saved.settingsVersion = 3; }
     this.data = merge(DEFAULTS, saved);
   }
   get() {

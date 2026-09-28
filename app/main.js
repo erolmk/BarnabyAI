@@ -22,6 +22,9 @@ const START_HIDDEN = process.argv.includes('--hidden');
 // through the stream count as the person's (the stream injects them, so the R19 hook would otherwise see none).
 const DEMO = process.argv.includes('--demo');
 if (DEMO) process.env.BARNABY_ALLOW_INJECTED = '1';
+// Recording (Open Barnaby (recording).vbs): our windows are no longer hidden from capture, so OBS can film the panel
+// and the ring. Barnaby's own screenshots still leave the docked panel out: they take only the work area.
+const RECORD = process.argv.includes('--record');
 
 // Dev launch (Open Barnaby.vbs): an elevated start does not inherit the caller's environment, so the launcher passes
 // where the key is instead (--key-file=<a file with an OPENROUTER_API_KEY=... line>). It is only read, never copied.
@@ -122,8 +125,8 @@ function createWidget() {
     show: false, title: product.assistantName, backgroundColor: '#00000000', webPreferences: WEB,
   });
   widgetWin.setAlwaysOnTop(true, 'screen-saver');
-  // Keep our own UI out of the agent's screenshots (also hides it from screen sharing).
-  widgetWin.setContentProtection(true);
+  // Keep our own UI out of the agent's screenshots (also hides it from screen sharing); not while recording.
+  widgetWin.setContentProtection(!RECORD);
   widgetWin.setVisibleOnAllWorkspaces(true);
   widgetWin.setMenu(null);
   watchRenderer(widgetWin, 'widget');
@@ -246,7 +249,7 @@ function createOverlay() {
     backgroundColor: '#00000000', webPreferences: WEB,
   });
   overlayWin.setAlwaysOnTop(true, 'screen-saver', 1);
-  overlayWin.setContentProtection(true);
+  overlayWin.setContentProtection(!RECORD);
   overlayWin.setIgnoreMouseEvents(true);
   overlayWin.setMenu(null);
   watchRenderer(overlayWin, 'overlay');
@@ -302,6 +305,14 @@ function placeOverlay(physRect) {
   overlayWin.setBounds(t); // twice: a move between displays of different scaling sizes the first one wrongly
 }
 
+// Our own panel, in overlay-local DIP: the ring's label and arrow keep out of it (the owner: they went under the docked
+// panel when the button was on the right).
+function panelInOverlay() {
+  if (!alive(widgetWin) || !widgetWin.isVisible() || !alive(overlayWin)) return null;
+  const w = widgetWin.getBounds(), o = overlayWin.getBounds();
+  return [w.x - o.x, w.y - o.y, w.width, w.height];
+}
+
 // A warning card stays until the person closes it, or Stop / Home / closing the page (UX 12): the agent's
 // clearOverlay and its rings never wipe it (clearWarning does).
 let warningShown = false;
@@ -319,8 +330,25 @@ function overlay(msg) {
     overlayWin.setIgnoreMouseEvents(!interactive);
     overlayWin.setFocusable(interactive);
     overlayWin.showInactive();
+    overlayWin.moveTop(); // above our own always-on-top panel, which re-stacks itself when it moves or docks
     if (interactive) overlayWin.focus();
   }
+}
+
+// ---------- private transcript (settings.keepTranscript: the owner's troubleshooting copy, on this computer only) ----------
+// One JSON line per turn in userData/transcripts/YYYY-MM-DD.jsonl, secrets redacted by the guardian, kept 14 days.
+function tlog(who, text, extra) {
+  let s = null;
+  try { s = config && config.get(); } catch (_) {}
+  if (!s || !s.keepTranscript) return;
+  try {
+    const d = new Date(), dir = UD('transcripts');
+    // The whole line is redacted: tool args and results (a refused type_text of a card number) too, not only the text.
+    let line = JSON.stringify({ t: d.toISOString(), who, text: String(text == null ? '' : text), ...(extra || {}) });
+    try { if (guardian && guardian.redact) line = guardian.redact(line); } catch (_) {}
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, d.toISOString().slice(0, 10) + '.jsonl'), line + '\n');
+  } catch (e) { log('transcript', e.message); }
 }
 
 // ---------- the ui bridge the agent talks to ----------
@@ -362,6 +390,7 @@ const ui = {
     const natural = speakOut(id, text, again);
     if (!again) send(launcherWin, 'say', { id, text, speak: false });
     log('[say]', text.length + ' chars'); // the log never holds what was said (04_safety 7.1)
+    tlog('barnaby', text);
     // Muted, the widget acks as soon as the caption is up, so the reading time decides (UX 5.2). Stop ends it at once.
     // A wait:false line is registered too, so the wake loop stays paused until Barnaby's voice has finished.
     const spoken = new Promise((resolve) => {
@@ -384,6 +413,7 @@ const ui = {
     speakOut(id, question);
     broadcast('ask', msg);
     log('[ask]', kind, choices.length + ' choices');
+    tlog('barnaby asks', question, { kind, choices });
     const answered = new Promise((resolve, reject) => { pendingAsk = { requestId, kind, choices, resolve, reject, msg }; });
     if (confirmOpen && !SMOKE) watchRealClicks(requestId); // R19 (the hidden test run hooks no mouse)
     return answered;
@@ -401,7 +431,7 @@ const ui = {
   highlight(rect, label, opts = {}) {
     if (warningShown) return; // the warning card stays on top until the person closes it
     placeOverlay(rect);
-    overlay({ type: 'highlight', rect: toDip(rect), label: label || '', arrow: true, dim: opts.dim !== false });
+    overlay({ type: 'highlight', rect: toDip(rect), label: label || '', arrow: true, dim: opts.dim !== false, avoid: panelInOverlay() });
   },
   clearOverlay() { if (!warningShown) overlay({ type: 'clear' }); },
   // kind: the guardian's scam kind (tech_support, gift_card, ...). Every scam warning goes into the safety diary.
@@ -415,6 +445,8 @@ const ui = {
   },
   showLauncher, hideLauncher, expandWidget,
   lastTarget: () => lastTarget,
+  // The docked panel in physical px (null when not docked): the agent's screenshot leaves it out.
+  dockedPanel: () => (dock ? physRect(dock.panel) : null),
   // True when Scam Shield warned about this window in the last 10 minutes (avoids a second card).
   recentWarning(hwnd) {
     const now = Date.now();
@@ -448,6 +480,7 @@ function settleAsk(p, ans) {
   pendingAsk = null;
   closeConfirm();
   log('[answer]', p.requestId, /^(yes|no)$/.test(ans) ? ans : String(ans).length + ' chars');
+  tlog('person answers', ans);
   broadcast('ask-cancel', { requestId: p.requestId });
   p.resolve(ans);
 }
@@ -496,17 +529,30 @@ function stopAll() {
   for (const p of [...pendingSay.values()]) p.done();
 }
 
-async function handleUtterance(text, opts = {}) {
+let lastRequest = null; // {text, at}: the last new request, to join a sentence the person finished after a pause
+async function handleUtterance(text, opts = {}, fromPerson = false) {
   text = String(text || '').trim();
   if (!text) return;
   log('[heard]', text.length + ' chars');
+  tlog('person', text);
   const kw = await keywordIntent(text); // before the busy check, so "please stop" works mid-task
   if (kw === 'stop') { stopAll(); return ui.say('Okay, I stopped.'); }
   if (kw === 'home') { stopAll(); expandWidget(false); return showLauncher(); }
   if (kw === 'quit') return quitAsking ? resolveAsk(null, QUIT_YES) : askToQuit();
   if (remoteOn) return ui.say(REMOTE_PAUSED); // R16: whoever controls the computer could be typing this
   if (pendingAsk) { resolveAsk(null, text); return; }
+  // Only the person's own spoken or typed words join (never a tile or an answer), and never while a scam warning or
+  // episode is on: stopAll would wipe the Scam Shield card, and the Shield would not show it again.
+  if (fromPerson && busyNow() && lastRequest && !warningShown && !(agent && agent._scamOn()) && Date.now() - lastRequest.at < 25000) {
+    // Said again soon after, while Barnaby is still starting on it (the owner: a pause cut an older person off and the
+    // rest became a new request): it is the same request, finished. Stop and start over with the whole of it.
+    log('[heard] continues the last request');
+    stopAll();
+    text = lastRequest.text + ' ' + text;
+    for (let i = 0; i < 40 && busyNow(); i++) await wait(100);
+  }
   if (busyNow()) return ui.say(STILL_WORKING);
+  const mine = lastRequest = { text, at: Date.now() };
   expandWidget(true);
   const me = routing = {};
   ui.status({ state: 'thinking' });
@@ -523,6 +569,7 @@ async function handleUtterance(text, opts = {}) {
   } finally {
     clearTimeout(ackT);
     if (routing === me) routing = null;
+    if (lastRequest === mine) lastRequest = null; // its run ended: a later sentence is a new request
   }
 }
 
@@ -816,6 +863,7 @@ function maintenanceTick() {
   const now = Date.now();
   // Retention (04_safety 7.1): logs 14 days and 5 MB, safety diary 90 days.
   diary.pruneLogs(UD('logs'), 14 * diary.DAY, now);
+  diary.pruneLogs(UD('transcripts'), 14 * diary.DAY, now);
   logm.init(UD('logs'));
   try { diary.prune(UD(DIARY), 90 * diary.DAY, now); } catch (e) { log('diary prune failed', e.message); }
   const due = alerts.dueFamily(config.get(), now);
@@ -899,11 +947,12 @@ function registerIpc() {
     applySettingsSideEffects(s, before);
     return config.publicView();
   });
-  ipcMain.handle('ask', (_e, text, opts) => { handleUtterance(text, opts); return true; });
+  ipcMain.handle('ask', (_e, text, opts) => { handleUtterance(text, opts, true); return true; }); // the widget: his own words
   ipcMain.on('answer', (_e, requestId, value) => resolveAsk(requestId, value));
   ipcMain.on('stop', () => stopAll());
   ipcMain.on('go-home', () => { stopAll(); expandWidget(false); showLauncher(); });
   ipcMain.handle('open-tile', (_e, id, arg) => { openTile(id, arg); return true; });
+  ipcMain.on('talk-hold', (_e, down) => { if (down) expandWidget(true); send(widgetWin, 'talk-hold', { down: !!down }); });
   ipcMain.handle('transcribe', async (_e, wavBase64) => {
     const s = config.get();
     const t0 = Date.now();
@@ -1035,6 +1084,7 @@ async function smokeDock(out, shot) {
     const disp = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
     d.want = geom.dock(disp.workArea, disp.bounds.width, config.get().textScale).panel;
     d.panel = widgetWin.getBounds();
+    d.dockedPanel = ui.dockedPanel(); // what the agent's screenshot leaves out
     d.bodyDocked = await js('document.body.classList.contains("docked")');
     ui.status({ state: 'acting', label: 'Clicking \u201cNew mail\u201d', detail: 'That starts a new email.', step: 2, totalSteps: 4,
       plan: [{ text: 'Open Outlook', state: 'done' }, { text: 'Start a new email', state: 'now' }, { text: 'Write the note', state: 'next' }, { text: 'You press Send', state: 'next' }] });
@@ -1058,6 +1108,7 @@ async function smokeDock(out, shot) {
     config.save({ dockPanel: false });
     expandWidget(true); await wait(300);
     d.floating = widgetWin.getBounds();
+    d.floatingPanel = ui.dockedPanel();
     d.floatingWant = geom.bounds(d.pill, true, disp.workArea, { scale: config.get().textScale });
     // A text size saved outside the Settings page (Barnaby's own update_settings) resizes the open panel at once.
     const s0 = config.get().textScale;
@@ -1070,6 +1121,7 @@ async function smokeDock(out, shot) {
     const bad = [];
     if (!sameRect(d.panel, d.want)) bad.push('docked panel ' + JSON.stringify(d.panel) + ' is not the right third ' + JSON.stringify(d.want));
     if (!d.bodyDocked) bad.push('the widget page was not told it is docked');
+    if (String(d.dockedPanel) !== String(physRect(d.want)) || d.floatingPanel) bad.push('ui.dockedPanel ' + d.dockedPanel + ' docked, ' + d.floatingPanel + ' floating');
     if (d.planItems !== 4 || d.title !== 'Clicking \u201cNew mail\u201d') bad.push('status card: ' + d.planItems + ' plan steps, title ' + d.title);
     if (d.pillBusy !== 'Thinking\u2026') bad.push('the pill says ' + JSON.stringify(d.pillBusy) + ' while thinking');
     if (!d.thinkBig || d.thinkBigIdle) bad.push('big thinking sign: shown while thinking ' + d.thinkBig + ', while idle ' + d.thinkBigIdle);
@@ -1214,6 +1266,7 @@ app.whenReady().then(async () => {
   if (process.env.HELPER_USER_DATA) app.setPath('userData', process.env.HELPER_USER_DATA);
   // Retention (04_safety 7.1, safety.html): logs 14 days, safety diary 90 days (and every 10 minutes: maintenanceTick).
   diary.pruneLogs(UD('logs'), 14 * diary.DAY);
+  diary.pruneLogs(UD('transcripts'), 14 * diary.DAY);
   logm.init(UD('logs'));
   log('starting', product.name, product.version, 'packaged=' + app.isPackaged, 'smoke=' + SMOKE);
   try { diary.prune(UD(DIARY), 90 * diary.DAY); } catch (e) { log('diary prune failed', e.message); }
@@ -1267,6 +1320,11 @@ app.whenReady().then(async () => {
     }
   });
   agent.on('error', (e) => { log('agent error event', e && e.kind); connectionProblem(e && e.kind); });
+  agent.on('tool', (c) => {
+    let a = c && c.args;
+    if (typeof a === 'string') { try { a = JSON.parse(a); } catch (_) {} }
+    tlog('barnaby does', (c && c.name) || '', { args: a, result: String((c && c.result) || '').slice(0, 400) });
+  });
   // Every command line the agent ran, was refused or failed: one diary line, shortened, private words hidden.
   agent.on('command', (c) => {
     const line = alerts.commandLine(product.assistantName, c, (t) => guardian.redact(t));

@@ -60,7 +60,10 @@
 
     // Label on the side with the most room; the arrow sits between it and the ring (clear of the 6% pulse).
     const o = { l: r.x - BAND, t: r.y - BAND, r: r.x + r.w + BAND, b: r.y + r.h + BAND };
-    const W = window.innerWidth, Hh = window.innerHeight;
+    // Our docked panel (main passes its rect as avoid): the free screen ends where the panel starts.
+    const av = Array.isArray(m.avoid) && m.avoid.length === 4 ? m.avoid.map(Number) : null;
+    const W = av && av.every(Number.isFinite) && av[0] > r.x + r.w ? Math.min(window.innerWidth, av[0]) : window.innerWidth;
+    const Hh = window.innerHeight;
     const room = { bottom: Hh - o.b, top: o.t, right: W - o.r, left: o.l };
     const side = Object.keys(room).reduce((a, k) => (room[k] > room[a] ? k : a), 'bottom');
     const gapV = 8 + Math.ceil(0.03 * r.h), gapH = 8 + Math.ceil(0.03 * r.w);

@@ -23,7 +23,7 @@ function makeAgent({ script = [], settings = {}, uiOpts, router, jev, log } = {}
   const dir = tmpDir();
   const h = {
     events, native: F.fakeNative(events), ui: F.fakeUi(events, uiOpts), llm: F.fakeLlm(script), guardian: F.fakeGuardian(),
-    support: F.fakeSupport(events), config: F.fakeConfig(settings), memory: new Memory(path.join(dir, 'memory.json')), done: [],
+    support: F.fakeSupport(events), config: F.fakeConfig({ mode: 'do', ...settings }), memory: new Memory(path.join(dir, 'memory.json')), done: [],
   };
   h.agent = new Agent({
     config: h.config, native: h.native, llm: h.llm, jev: jev || {}, guardian: h.guardian,
@@ -95,7 +95,7 @@ test('set_plan and the first action in one reply run in one step', async () => {
   assert.ok(h.ui.statuses.some((s) => Array.isArray(s.plan) && s.plan[0].state === 'now'));
 });
 
-test('effort is one-way: after a surprise it stays high, and Jev is asked at most once per task', async () => {
+test('effort: high for step 1 and right after a surprise only (no sticky high), and Jev is never asked', async () => {
   const s = makeAgent({ script: [
     assistant(tc('click', { element_id: 1, explain: 'Clicking.' })),
     assistant(tc('click', { element_id: 999, explain: 'Clicking the missing one.' })),
@@ -103,7 +103,8 @@ test('effort is one-way: after a surprise it stays high, and Jev is asked at mos
     assistant(tc('done', { summary: 'ok' })),
   ] });
   await s.agent.runTask('do it');
-  assert.deepEqual(s.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['high', 'low', 'high', 'high']);
+  assert.deepEqual(s.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['high', 'low', 'high', 'low']);
+  assert.deepEqual(s.llm.calls.filter((c) => c.tools).map((c) => c.maxTokens), [6000, 2500, 6000, 2500]);
 
   let n = 0;
   const j = makeAgent({ jev: { noul: async () => { n++; return 0.9; } }, script: [
@@ -113,8 +114,22 @@ test('effort is one-way: after a surprise it stays high, and Jev is asked at mos
     assistant(tc('done', { summary: 'ok' })),
   ] });
   await j.agent.runTask('write an email');
-  assert.equal(n, 1, 'Jev asked once, the answer sticks');
-  assert.deepEqual(j.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['high', 'high', 'high', 'high']);
+  assert.equal(n, 0, 'no Jev effort call');
+  assert.deepEqual(j.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['high', 'low', 'low', 'low']);
+
+  // support diagnosis thinks hard until a fix is proposed; settings.thinking overrides the policy
+  const sup = makeAgent({ script: [
+    assistant(tc('run_check', { name: 'overview' })),
+    assistant(tc('apply_fix', { name: 'clear_temp', explain: 'This frees up space.' })),
+    assistant(tc('done', { summary: 'ok' })),
+  ] });
+  await sup.agent.runSupport('my computer is slow');
+  assert.deepEqual(sup.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), ['high', 'high', 'low']);
+  for (const [thinking, want] of [['always', 'high'], ['never', 'low']]) {
+    const t = makeAgent({ settings: { thinking }, script: [assistant(tc('scroll', { direction: 'down', explain: 'x' })), assistant(tc('done', { summary: 'ok' }))] });
+    await t.agent.runTask('scroll');
+    assert.deepEqual(t.llm.calls.filter((c) => c.tools).map((c) => c.reasoningEffort), [want, want], thinking);
+  }
 
   let m = 0;
   const p = makeAgent({ jev: { noul: async () => { m++; return 0.9; } }, script: [
@@ -238,13 +253,59 @@ test('a Send whose recipient was read off the screen keeps the card: the agent c
   assert.match(h.toolResults(2)[1], /^REFUSED/);
 });
 
-test('run_command: a lookup the parser cannot prove read-only is sent back to be rewritten, never a card', async () => {
+test('run_command: a command the parser cannot prove read-only runs without a card; a broken check never runs', async () => {
   const h = makeAgent({ script: [assistant(tc('run_command', { command: 'Get-Package -Name *zoom*', explain: 'Checking for Zoom.' }))] });
   realGuardian(h);
   await h.agent.runSupport('is zoom installed');
-  assert.match(h.toolResults(1)[0], /^NOT RUN/);
+  assert.match(h.toolResults(1)[0], /^The command ran/);
   assert.equal(h.ui.asks.length, 0);
-  assert.ok(!h.events.some((e) => e.type === 'ps'));
+  assert.ok(h.events.some((e) => e.type === 'ps'));
+
+  // the guardian cannot check it: refused, nothing runs (the hard refusals are the only gate left)
+  const b = makeAgent({ script: [assistant(tc('run_command', { command: 'Restart-Service Spooler', explain: 'x' }))] });
+  b.agent.guardian.commandCheck = () => { throw new Error('broken'); };
+  await b.agent.runSupport('printer');
+  assert.match(b.toolResults(1)[0], /^REFUSED/);
+  assert.ok(!b.events.some((e) => e.type === 'ps'));
+  assert.equal(b.ui.asks.length, 0);
+
+  // a scam episode: only read-only commands, the rest refused
+  const s = makeAgent({ script: [assistant(tc('run_command', { command: 'Restart-Service Spooler', explain: 'x' }))] });
+  realGuardian(s);
+  s.agent.markScam();
+  await s.agent.runSupport('printer');
+  assert.match(s.toolResults(1)[0], /^REFUSED/);
+  assert.ok(!s.events.some((e) => e.type === 'ps'));
+});
+
+test('apply_fix with the real guardian: runs without asking, but asks during a scam episode', async () => {
+  const h = makeAgent({ script: [assistant(tc('apply_fix', { name: 'clear_temp', explain: 'This frees up space.' })), assistant(tc('done', { summary: 'ok' }))] });
+  realGuardian(h);
+  await h.agent.runSupport('my computer is slow');
+  assert.ok(h.events.some((e) => e.type === 'fix'));
+  assert.equal(h.ui.asks.filter((a) => a.kind === 'confirm').length, 0);
+
+  const s = makeAgent({ script: [assistant(tc('apply_fix', { name: 'clear_temp', explain: 'This frees up space.' }))], uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') } });
+  realGuardian(s);
+  s.agent.markScam();
+  await s.agent.runSupport('my computer is slow');
+  assert.ok(s.ui.asks.some((a) => a.kind === 'confirm'));
+  assert.ok(!s.events.some((e) => e.type === 'fix'));
+});
+
+test('Send the request asked for, with Jev down: the card still shows (a rule, not a model doubt)', async () => {
+  const h = makeAgent({ script: [assistant(tc('click', { element_id: 2, explain: 'Sending it to Anne Marie now.' }))], uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') } });
+  realGuardian(h, null);
+  await h.agent.runTask('email Anne Marie saying hi and just send it');
+  assert.ok(h.ui.asks.some((a) => a.kind === 'confirm'));
+  assert.ok(!h.native.calls.some((c) => c.cmd === 'click_element' && c.args.id === 2));
+  // the whole guardian throws: the hard rule's Send exception still shows the card
+  const t = makeAgent({ script: [assistant(tc('click', { element_id: 2, explain: 'Sending it to Anne Marie now.' }))], uiOpts: { answer: (a) => (a.kind === 'confirm' ? 'no' : 'okay') } });
+  const g = realGuardian(t, null);
+  g.gateAction = async () => { throw new Error('broken'); };
+  await t.agent.runTask('email Anne Marie saying hi and just send it');
+  assert.ok(t.ui.asks.some((a) => a.kind === 'confirm'));
+  assert.ok(!t.native.calls.some((c) => c.cmd === 'click_element' && c.args.id === 2));
 });
 
 test('save_contact: only from their words, never over a Settings contact, never in a scam, and never trusted for money or calls', async () => {
